@@ -68,6 +68,7 @@ private sealed interface AppScreen {
     object Settings : AppScreen
     object ManageSt : AppScreen
     data class License(val doc: LegalDoc) : AppScreen
+    data class WebView(val url: String) : AppScreen
 }
 
 private sealed interface PendingDialog {
@@ -98,6 +99,7 @@ private fun appScreenStateSaver(legalDocs: List<LegalDoc>): Saver<AppScreen, Str
                 AppScreen.Settings -> "settings"
                 AppScreen.ManageSt -> "manage-st"
                 is AppScreen.License -> "license:${screen.doc.assetPath}"
+                is AppScreen.WebView -> "webview:${screen.url}"
             }
         },
         restore = { key ->
@@ -108,6 +110,7 @@ private fun appScreenStateSaver(legalDocs: List<LegalDoc>): Saver<AppScreen, Str
                 key == "legal" -> AppScreen.Legal
                 key == "settings" -> AppScreen.Settings
                 key == "manage-st" -> AppScreen.ManageSt
+                key.startsWith("webview:") -> AppScreen.WebView(key.removePrefix("webview:"))
                 key.startsWith("license:") -> {
                     val assetPath = key.removePrefix("license:")
                     val doc = legalDocs.firstOrNull { it.assetPath == assetPath }
@@ -400,6 +403,8 @@ class MainActivity : ComponentActivity() {
                             onAutoCheckChanged = { enabled -> viewModel.setAutoCheckForUpdates(enabled) },
                             autoOpenBrowserEnabled = viewModel.autoOpenBrowserWhenReady.value,
                             onAutoOpenBrowserChanged = { enabled -> viewModel.setAutoOpenBrowserWhenReady(enabled) },
+                            inAppWebViewEnabled = viewModel.inAppWebViewEnabled.value,
+                            onInAppWebViewChanged = { enabled -> viewModel.setInAppWebViewEnabled(enabled) },
                             themeMode = themeMode,
                             onThemeModeChanged = { mode -> viewModel.setThemeMode(mode) },
                             isBatteryUnrestricted = batteryUnrestrictedState.value,
@@ -491,7 +496,15 @@ class MainActivity : ComponentActivity() {
                             busyMessage = viewModel.busyMessage,
                             onStart = { startNode() },
                             onStop = { stopNode() },
-                            onOpen = { openNodeUi(statusState.value.port) },
+                            onOpen = {
+                                val port = statusState.value.port
+                                val url = "http://127.0.0.1:$port/"
+                                if (viewModel.inAppWebViewEnabled.value) {
+                                    currentScreen.value = AppScreen.WebView(url)
+                                } else {
+                                    openNodeUi(port)
+                                }
+                            },
                             autoOpenBrowserWhenReady = viewModel.autoOpenBrowserWhenReady.value,
                             autoOpenBrowserTriggeredForCurrentRun = autoOpenBrowserTriggeredForCurrentRun.value,
                             onAutoOpenBrowserTriggered = { autoOpenBrowserTriggeredForCurrentRun.value = true },
@@ -544,6 +557,16 @@ class MainActivity : ComponentActivity() {
                             onCancelCustomOperation = { viewModel.cancelCustomSourceDownload() },
                             onShowSettings = { currentScreen.value = AppScreen.Settings },
                             onShowManageSt = { currentScreen.value = AppScreen.ManageSt }
+                        )
+                    }
+
+                    is AppScreen.WebView -> {
+                        StWebViewScreen(
+                            url = screen.url,
+                            onBackToDashboard = { currentScreen.value = AppScreen.Home },
+                            onOpenExternalBrowser = { externalUrl ->
+                                openUrl(externalUrl)
+                            }
                         )
                     }
                 }

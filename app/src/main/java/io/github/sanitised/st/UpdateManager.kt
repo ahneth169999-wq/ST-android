@@ -46,6 +46,7 @@ internal class UpdateManager(
         private const val APP_PREFS_NAME = "updates"
         private const val PREF_AUTO_CHECK = "auto_check"
         private const val PREF_AUTO_OPEN_BROWSER = "auto_open_browser"
+        private const val PREF_IN_APP_WEBVIEW = "in_app_webview"
         private const val PREF_THEME_MODE = "theme_mode"
         private const val PREF_CHANNEL = "channel"
         private const val PREF_FIRST_LAUNCH_MS = "first_launch_ms"
@@ -70,6 +71,9 @@ internal class UpdateManager(
     )
     val autoOpenBrowserWhenReady = mutableStateOf(
         appPrefs.getBoolean(PREF_AUTO_OPEN_BROWSER, true)
+    )
+    val inAppWebViewEnabled = mutableStateOf(
+        appPrefs.getBoolean(PREF_IN_APP_WEBVIEW, true)
     )
     val themeMode = mutableStateOf(
         resolveInitialThemeMode()
@@ -109,6 +113,11 @@ internal class UpdateManager(
     fun setAutoOpenBrowserWhenReady(enabled: Boolean) {
         autoOpenBrowserWhenReady.value = enabled
         appPrefs.edit().putBoolean(PREF_AUTO_OPEN_BROWSER, enabled).apply()
+    }
+
+    fun setInAppWebViewEnabled(enabled: Boolean) {
+        inAppWebViewEnabled.value = enabled
+        appPrefs.edit().putBoolean(PREF_IN_APP_WEBVIEW, enabled).apply()
     }
 
     fun setThemeMode(mode: ThemeMode) {

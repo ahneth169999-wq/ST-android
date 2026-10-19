@@ -39,6 +39,8 @@ fun SettingsScreen(
     onAutoCheckChanged: (Boolean) -> Unit,
     autoOpenBrowserEnabled: Boolean,
     onAutoOpenBrowserChanged: (Boolean) -> Unit,
+    inAppWebViewEnabled: Boolean,
+    onInAppWebViewChanged: (Boolean) -> Unit,
     themeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
     isBatteryUnrestricted: Boolean,
@@ -79,6 +81,13 @@ fun SettingsScreen(
                     subtitle = stringResource(R.string.settings_auto_open_subtitle),
                     checked = autoOpenBrowserEnabled,
                     onCheckedChange = onAutoOpenBrowserChanged
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                SettingsToggleRow(
+                    title = stringResource(R.string.settings_in_app_webview_title),
+                    subtitle = stringResource(R.string.settings_in_app_webview_subtitle),
+                    checked = inAppWebViewEnabled,
+                    onCheckedChange = onInAppWebViewChanged
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
@@ -376,6 +385,8 @@ private fun SettingsScreenPreview() {
         onAutoCheckChanged = {},
         autoOpenBrowserEnabled = false,
         onAutoOpenBrowserChanged = {},
+        inAppWebViewEnabled = true,
+        onInAppWebViewChanged = {},
         themeMode = ThemeMode.AUTO,
         onThemeModeChanged = {},
         isBatteryUnrestricted = false,

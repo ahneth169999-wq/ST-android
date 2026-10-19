@@ -114,6 +114,11 @@
     <string name="settings_auto_check_title">Automatically Check for Updates</string>
     <string name="settings_auto_open_subtitle">When the server is ready, open SillyTavern in your browser for you.</string>
     <string name="settings_auto_open_title">Open Browser Automatically</string>
+    <string name="settings_in_app_webview_title">Use In-App Browser</string>
+    <string name="settings_in_app_webview_subtitle">Open SillyTavern in fullscreen inside the app with voice, audio, and character upload support instead of launching Chrome.</string>
+    <string name="webview_open_external">Open in External Browser</string>
+    <string name="webview_reload">Reload Page</string>
+    <string name="webview_dashboard">Server Dashboard</string>
     <string name="settings_theme_title">Theme</string>
     <string name="settings_theme_auto_label">Automatic</string>
     <string name="settings_theme_light_label">Light</string>

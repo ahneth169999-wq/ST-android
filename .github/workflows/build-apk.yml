@@ -2,6 +2,9 @@ name: Build APK
 
 on:
   push:
+    branches:
+      - master
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -35,8 +38,11 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-apk
-          path: out/*.apk
+          name: SillyTavern-Android-APK
+          path: |
+            out/*.apk
+            app/build/outputs/apk/*/*.apk
+          if-no-files-found: error
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
