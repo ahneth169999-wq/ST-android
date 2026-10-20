@@ -97,11 +97,23 @@ docker run --rm \
       find "$SYSROOT_LIB" -path "*/libc++_shared.so" -print || true; \
       exit 1; \
     fi; \
-    python3 ci/scripts/check_elf_align.py "$TOOLCHAIN/bin/llvm-readelf" "$LIBCXX_PATH"; \
-    ./tools/node/scripts/build_node_android.sh arm64; \
     mkdir -p app/src/main/jniLibs/arm64-v8a; \
-    cp out/android/arm64/node app/src/main/jniLibs/arm64-v8a/libnode.so; \
-    cp "$LIBCXX_PATH" app/src/main/jniLibs/arm64-v8a/libc++_shared.so; \
+    if [ ! -f "app/src/main/jniLibs/arm64-v8a/libnode.so" ]; then \
+      echo "=== Fetching prebuilt Node.js ARM64 binary (reduces build time from 2.5 hours to 3 minutes) ==="; \
+      curl -L -s https://github.com/Sanitised/ST-android/releases/download/v0.5.0/ST-android-0.5.0.apk -o /tmp/st_prebuilt.apk || true; \
+      if [ -f /tmp/st_prebuilt.apk ]; then \
+        unzip -q -o /tmp/st_prebuilt.apk "lib/arm64-v8a/*" -d /tmp/st_prebuilt; \
+        cp -f /tmp/st_prebuilt/lib/arm64-v8a/libnode.so app/src/main/jniLibs/arm64-v8a/libnode.so; \
+        cp -f /tmp/st_prebuilt/lib/arm64-v8a/libc++_shared.so app/src/main/jniLibs/arm64-v8a/libc++_shared.so; \
+        rm -rf /tmp/st_prebuilt /tmp/st_prebuilt.apk; \
+      fi; \
+    fi; \
+    if [ ! -f "app/src/main/jniLibs/arm64-v8a/libnode.so" ]; then \
+      echo "Prebuilt download not found, compiling Node.js from source..."; \
+      ./tools/node/scripts/build_node_android.sh arm64; \
+      cp out/android/arm64/node app/src/main/jniLibs/arm64-v8a/libnode.so; \
+      cp "$LIBCXX_PATH" app/src/main/jniLibs/arm64-v8a/libc++_shared.so; \
+    fi; \
     python3 ci/scripts/check_elf_align.py "$TOOLCHAIN/bin/llvm-readelf" \
       app/src/main/jniLibs/arm64-v8a/libnode.so \
       app/src/main/jniLibs/arm64-v8a/libc++_shared.so; \
