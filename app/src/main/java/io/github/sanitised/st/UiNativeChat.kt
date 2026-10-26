@@ -809,6 +809,7 @@ fun StNativeChatScreen(
             }
         }
     }
+}
 
     // --- Character Selector Bottom Sheet ---
     if (showCharacterSheet) {
