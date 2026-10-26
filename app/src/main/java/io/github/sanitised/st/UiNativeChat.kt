@@ -1298,10 +1298,10 @@ fun StNativeChatScreen(
                 Button(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.createNewChat {
+                        viewModel.createNewChat(onComplete = {
                             showSessionsSheet = false
                             Toast.makeText(context, "New chat started!", Toast.LENGTH_SHORT).show()
-                        }
+                        })
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1340,7 +1340,7 @@ fun StNativeChatScreen(
                     ) {
                         items(chatSessions) { session ->
                             val isCurrent = session.fileName == activeChatFileName ||
-                                    (activeChatFileName.isBlank() && session == chatSessions.firstOrNull())
+                                    (activeChatFileName.isNullOrBlank() && session == chatSessions.firstOrNull())
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1374,9 +1374,9 @@ fun StNativeChatScreen(
                                             fontSize = 14.sp,
                                             maxLines = 1
                                         )
-                                        if (session.lastMessage.isNotBlank()) {
+                                        if (session.previewText.isNotBlank()) {
                                             Text(
-                                                text = session.lastMessage,
+                                                text = session.previewText,
                                                 color = ColorTextSecondary,
                                                 fontSize = 11.sp,
                                                 maxLines = 1

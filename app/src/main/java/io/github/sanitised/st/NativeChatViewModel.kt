@@ -194,12 +194,16 @@ class NativeChatViewModel : ViewModel() {
     }
 
     fun selectChatSession(session: StChatSession, onComplete: (() -> Unit)? = null) {
+        selectChatSession(session.fileName, onComplete)
+    }
+
+    fun selectChatSession(fileName: String, onComplete: (() -> Unit)? = null) {
         val character = _selectedCharacter.value ?: return
-        _activeChatFileName.value = session.fileName
+        _activeChatFileName.value = fileName
         _isLoadingMessages.value = true
         viewModelScope.launch {
             try {
-                val history = NativeChatApi.getChatMessages(currentBaseUrl, character.avatar, session.fileName)
+                val history = NativeChatApi.getChatMessages(currentBaseUrl, character.avatar, fileName)
                 _messages.value = history
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -262,8 +266,8 @@ class NativeChatViewModel : ViewModel() {
         _messages.value = list
     }
 
-    fun createNewChat(character: StCharacter? = _selectedCharacter.value): Boolean {
-        val targetChar = character ?: _characters.value.firstOrNull() ?: return false
+    fun createNewChat(character: StCharacter? = _selectedCharacter.value, onComplete: (() -> Unit)? = null): Boolean {
+        val targetChar = character ?: _selectedCharacter.value ?: _characters.value.firstOrNull() ?: return false
         _selectedCharacter.value = targetChar
         val timeStamp = SimpleDateFormat("yyyy-MM-dd @HH'h' mm'm' ss's'", Locale.US).format(Date())
         val newFileName = timeStamp
@@ -271,7 +275,12 @@ class NativeChatViewModel : ViewModel() {
         initNewChatMessages(targetChar)
         saveCurrentChat()
         loadChatSessions()
+        onComplete?.invoke()
         return true
+    }
+
+    fun createNewChat(onComplete: () -> Unit): Boolean {
+        return createNewChat(character = _selectedCharacter.value, onComplete = onComplete)
     }
 
     fun sendMessage(userText: String, userName: String = _userName.value) {
