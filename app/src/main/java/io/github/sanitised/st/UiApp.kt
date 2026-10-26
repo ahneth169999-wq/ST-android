@@ -45,6 +45,7 @@ fun STAndroidApp(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpen: () -> Unit,
+    onOpenNativeChat: () -> Unit = {},
     autoOpenBrowserWhenReady: Boolean,
     autoOpenBrowserTriggeredForCurrentRun: Boolean,
     onAutoOpenBrowserTriggered: () -> Unit,
@@ -310,9 +311,9 @@ fun STAndroidApp(
                         Text(text = stringResource(R.string.stop))
                     }
                 }
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
                 Button(
-                    onClick = onOpen,
+                    onClick = onOpenNativeChat,
                     enabled = canOpen,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -320,9 +321,17 @@ fun STAndroidApp(
                         text = if (status.state == NodeState.RUNNING && !readyState.value) {
                             stringResource(R.string.waiting_for_server)
                         } else {
-                            stringResource(R.string.open_in_browser)
+                            "✨ Open Native Chat (120fps Modern UI)"
                         }
                     )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = onOpen,
+                    enabled = canOpen,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = "🌐 Classic SillyTavern Web")
                 }
                 Spacer(modifier = Modifier.height(12.dp))
             }

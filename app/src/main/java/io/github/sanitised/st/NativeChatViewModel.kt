@@ -1,0 +1,264 @@
+package io.github.sanitised.st
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+class NativeChatViewModel : ViewModel() {
+
+    private val _characters = MutableStateFlow<List<StCharacter>>(emptyList())
+    val characters: StateFlow<List<StCharacter>> = _characters.asStateFlow()
+
+    private val _selectedCharacter = MutableStateFlow<StCharacter?>(null)
+    val selectedCharacter: StateFlow<StCharacter?> = _selectedCharacter.asStateFlow()
+
+    private val _messages = MutableStateFlow<List<StChatMessage>>(emptyList())
+    val messages: StateFlow<List<StChatMessage>> = _messages.asStateFlow()
+
+    private val _isLoadingCharacters = MutableStateFlow(false)
+    val isLoadingCharacters: StateFlow<Boolean> = _isLoadingCharacters.asStateFlow()
+
+    private val _isLoadingMessages = MutableStateFlow(false)
+    val isLoadingMessages: StateFlow<Boolean> = _isLoadingMessages.asStateFlow()
+
+    private val _isGenerating = MutableStateFlow(false)
+    val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+
+    private val _activeChatFileName = MutableStateFlow<String?>(null)
+    val activeChatFileName: StateFlow<String?> = _activeChatFileName.asStateFlow()
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    private var currentBaseUrl: String = "http://127.0.0.1:8000"
+
+    fun setBaseUrl(url: String) {
+        currentBaseUrl = url.trimEnd('/')
+    }
+
+    fun loadCharacters(initialAvatar: String? = null) {
+        viewModelScope.launch {
+            _isLoadingCharacters.value = true
+            _errorMessage.value = null
+            try {
+                val list = NativeChatApi.getCharacters(currentBaseUrl)
+                _characters.value = list
+                if (list.isNotEmpty()) {
+                    val target = if (!initialAvatar.isNullOrBlank()) {
+                        list.firstOrNull { it.avatar == initialAvatar } ?: list.first()
+                    } else {
+                        _selectedCharacter.value ?: list.first()
+                    }
+                    selectCharacter(target)
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = "Failed to load characters: ${e.localizedMessage}"
+            } finally {
+                _isLoadingCharacters.value = false
+            }
+        }
+    }
+
+    fun selectCharacter(character: StCharacter) {
+        _selectedCharacter.value = character
+        viewModelScope.launch {
+            _isLoadingMessages.value = true
+            try {
+                // Fetch chats for this character
+                val chats = NativeChatApi.getCharacterChats(currentBaseUrl, character.avatar)
+                if (chats.isNotEmpty()) {
+                    val latestChat = chats.first()
+                    _activeChatFileName.value = latestChat.fileName
+                    val history = NativeChatApi.getChatMessages(currentBaseUrl, character.avatar, latestChat.fileName)
+                    if (history.isNotEmpty()) {
+                        _messages.value = history
+                    } else {
+                        initNewChatMessages(character)
+                    }
+                } else {
+                    createNewChat(character)
+                }
+            } catch (e: Exception) {
+                initNewChatMessages(character)
+            } finally {
+                _isLoadingMessages.value = false
+            }
+        }
+    }
+
+    private fun initNewChatMessages(character: StCharacter) {
+        val list = mutableListOf<StChatMessage>()
+        if (character.firstMessage.isNotBlank()) {
+            list.add(
+                StChatMessage(
+                    name = character.name,
+                    isUser = false,
+                    text = character.firstMessage,
+                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+                )
+            )
+        }
+        _messages.value = list
+    }
+
+    fun createNewChat(character: StCharacter? = _selectedCharacter.value) {
+        if (character == null) return
+        val newFileName = SimpleDateFormat("yyyy-MM-dd @HH'h' mm'm' ss's'", Locale.US).format(Date())
+        _activeChatFileName.value = newFileName
+        initNewChatMessages(character)
+        saveCurrentChat()
+    }
+
+    fun sendMessage(userText: String, userName: String = "User") {
+        val character = _selectedCharacter.value ?: return
+        val trimmed = userText.trim()
+        if (trimmed.isBlank() || _isGenerating.value) return
+
+        val userMessage = StChatMessage(
+            name = userName,
+            isUser = true,
+            text = trimmed,
+            sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+        )
+
+        val tempPlaceholder = StChatMessage(
+            name = character.name,
+            isUser = false,
+            text = "",
+            isGenerating = true
+        )
+
+        val updatedList = _messages.value + userMessage
+        _messages.value = updatedList + tempPlaceholder
+        _isGenerating.value = true
+        _errorMessage.value = null
+
+        viewModelScope.launch {
+            // Optimistically save user message
+            saveCurrentChat(messagesToSave = updatedList)
+
+            val result = NativeChatApi.generateReply(
+                baseUrl = currentBaseUrl,
+                character = character,
+                history = updatedList,
+                userMessage = trimmed,
+                userName = userName
+            )
+
+            result.onSuccess { replyText ->
+                val assistantMessage = StChatMessage(
+                    name = character.name,
+                    isUser = false,
+                    text = replyText,
+                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+                )
+                val finalList = updatedList + assistantMessage
+                _messages.value = finalList
+                saveCurrentChat(messagesToSave = finalList)
+            }.onFailure { err ->
+                _messages.value = updatedList
+                _errorMessage.value = err.message ?: "Failed to generate reply"
+            }
+
+            _isGenerating.value = false
+        }
+    }
+
+    fun regenerateLastMessage(userName: String = "User") {
+        val character = _selectedCharacter.value ?: return
+        val list = _messages.value.toMutableList()
+        if (list.isEmpty() || _isGenerating.value) return
+
+        // If last message is assistant, remove it
+        if (!list.last().isUser) {
+            list.removeAt(list.lastIndex)
+        }
+        if (list.isEmpty()) return
+
+        // The preceding message should be user
+        val lastUserMsg = list.lastOrNull { it.isUser } ?: return
+        val prompt = lastUserMsg.text
+
+        val tempPlaceholder = StChatMessage(
+            name = character.name,
+            isUser = false,
+            text = "",
+            isGenerating = true
+        )
+
+        _messages.value = list + tempPlaceholder
+        _isGenerating.value = true
+        _errorMessage.value = null
+
+        viewModelScope.launch {
+            val result = NativeChatApi.generateReply(
+                baseUrl = currentBaseUrl,
+                character = character,
+                history = list,
+                userMessage = prompt,
+                userName = userName
+            )
+
+            result.onSuccess { replyText ->
+                val assistantMessage = StChatMessage(
+                    name = character.name,
+                    isUser = false,
+                    text = replyText,
+                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+                )
+                val finalList = list + assistantMessage
+                _messages.value = finalList
+                saveCurrentChat(messagesToSave = finalList)
+            }.onFailure { err ->
+                _messages.value = list
+                _errorMessage.value = err.message ?: "Failed to regenerate reply"
+            }
+
+            _isGenerating.value = false
+        }
+    }
+
+    fun deleteMessage(index: Int) {
+        val list = _messages.value.toMutableList()
+        if (index in list.indices) {
+            list.removeAt(index)
+            _messages.value = list
+            saveCurrentChat()
+        }
+    }
+
+    fun editMessage(index: Int, newText: String) {
+        val list = _messages.value.toMutableList()
+        if (index in list.indices) {
+            val old = list[index]
+            list[index] = old.copy(text = newText)
+            _messages.value = list
+            saveCurrentChat()
+        }
+    }
+
+    private fun saveCurrentChat(messagesToSave: List<StChatMessage> = _messages.value) {
+        val character = _selectedCharacter.value ?: return
+        val fileName = _activeChatFileName.value ?: return
+        viewModelScope.launch {
+            NativeChatApi.saveChat(
+                baseUrl = currentBaseUrl,
+                avatarUrl = character.avatar,
+                fileName = fileName,
+                userName = "User",
+                characterName = character.name,
+                messages = messagesToSave
+            )
+        }
+    }
+
+    fun dismissError() {
+        _errorMessage.value = null
+    }
+}

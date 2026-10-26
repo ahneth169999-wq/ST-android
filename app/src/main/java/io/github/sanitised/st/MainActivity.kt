@@ -69,6 +69,7 @@ private sealed interface AppScreen {
     object ManageSt : AppScreen
     data class License(val doc: LegalDoc) : AppScreen
     data class WebView(val url: String) : AppScreen
+    data class NativeChat(val initialAvatar: String? = null) : AppScreen
 }
 
 private sealed interface PendingDialog {
@@ -100,6 +101,7 @@ private fun appScreenStateSaver(legalDocs: List<LegalDoc>): Saver<AppScreen, Str
                 AppScreen.ManageSt -> "manage-st"
                 is AppScreen.License -> "license:${screen.doc.assetPath}"
                 is AppScreen.WebView -> "webview:${screen.url}"
+                is AppScreen.NativeChat -> "nativechat:${screen.initialAvatar.orEmpty()}"
             }
         },
         restore = { key ->
@@ -111,6 +113,8 @@ private fun appScreenStateSaver(legalDocs: List<LegalDoc>): Saver<AppScreen, Str
                 key == "settings" -> AppScreen.Settings
                 key == "manage-st" -> AppScreen.ManageSt
                 key.startsWith("webview:") -> AppScreen.WebView(key.removePrefix("webview:"))
+                key.startsWith("nativechat:") -> AppScreen.NativeChat(key.removePrefix("nativechat:").takeIf { it.isNotBlank() })
+                key == "nativechat" -> AppScreen.NativeChat()
                 key.startsWith("license:") -> {
                     val assetPath = key.removePrefix("license:")
                     val doc = legalDocs.firstOrNull { it.assetPath == assetPath }
@@ -505,6 +509,9 @@ class MainActivity : ComponentActivity() {
                                     openNodeUi(port)
                                 }
                             },
+                            onOpenNativeChat = {
+                                currentScreen.value = AppScreen.NativeChat()
+                            },
                             autoOpenBrowserWhenReady = viewModel.autoOpenBrowserWhenReady.value,
                             autoOpenBrowserTriggeredForCurrentRun = autoOpenBrowserTriggeredForCurrentRun.value,
                             onAutoOpenBrowserTriggered = { autoOpenBrowserTriggeredForCurrentRun.value = true },
@@ -566,6 +573,23 @@ class MainActivity : ComponentActivity() {
                             onBackToDashboard = { currentScreen.value = AppScreen.Home },
                             onOpenExternalBrowser = { externalUrl ->
                                 openUrl(externalUrl)
+                            },
+                            onOpenNativeChat = {
+                                currentScreen.value = AppScreen.NativeChat()
+                            }
+                        )
+                    }
+
+                    is AppScreen.NativeChat -> {
+                        val port = statusState.value.port
+                        val baseUrl = "http://127.0.0.1:$port"
+                        val nativeChatVm: NativeChatViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+                        StNativeChatScreen(
+                            baseUrl = baseUrl,
+                            viewModel = nativeChatVm,
+                            onBackToDashboard = { currentScreen.value = AppScreen.Home },
+                            onOpenFullSillyTavern = {
+                                currentScreen.value = AppScreen.WebView("http://127.0.0.1:$port/")
                             }
                         )
                     }

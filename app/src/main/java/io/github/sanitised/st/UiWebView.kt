@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
@@ -64,7 +65,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 fun StWebViewScreen(
     url: String,
     onBackToDashboard: () -> Unit,
-    onOpenExternalBrowser: (String) -> Unit
+    onOpenExternalBrowser: (String) -> Unit,
+    onOpenNativeChat: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
@@ -167,6 +169,18 @@ fun StWebViewScreen(
                     maxLines = 1,
                     modifier = Modifier.weight(1f)
                 )
+
+                // Switch to Fast Native Chat
+                IconButton(
+                    onClick = onOpenNativeChat,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Chat,
+                        contentDescription = "Switch to Native Chat",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
 
                 // Reload Page Button
                 IconButton(
