@@ -584,9 +584,16 @@ class MainActivity : ComponentActivity() {
                         val port = statusState.value.port
                         val baseUrl = "http://127.0.0.1:$port"
                         val nativeChatVm: NativeChatViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+                        val appPaths = AppPaths(this@MainActivity)
+                        val localDirs = listOf(
+                            java.io.File(appPaths.dataDir, "default-user/characters"),
+                            java.io.File(appPaths.dataDir, "characters"),
+                            java.io.File(appPaths.stDir, "public/characters")
+                        )
                         StNativeChatScreen(
                             baseUrl = baseUrl,
                             viewModel = nativeChatVm,
+                            localCharacterDirs = localDirs,
                             onBackToDashboard = { currentScreen.value = AppScreen.Home },
                             onOpenFullSillyTavern = {
                                 currentScreen.value = AppScreen.WebView("http://127.0.0.1:$port/")

@@ -1,10 +1,12 @@
 package io.github.sanitised.st
 
+import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -16,10 +18,64 @@ import java.util.Locale
 
 object NativeChatApi {
 
+    @Volatile
+    var csrfToken: String? = null
+        private set
+
+    @Volatile
+    var sessionCookie: String? = null
+        private set
+
     /**
-     * Helper to perform HTTP POST with JSON body and return response string.
+     * Case-insensitively extracts cookies from Set-Cookie response headers.
      */
-    private fun postJson(urlStr: String, jsonBody: String, timeoutMs: Int = 30_000): String {
+    private fun extractCookies(conn: HttpURLConnection): String? {
+        val list = conn.headerFields.entries
+            .filter { it.key != null && it.key.equals("Set-Cookie", ignoreCase = true) }
+            .flatMap { it.value }
+        if (list.isEmpty()) return null
+        return list.joinToString("; ") { it.substringBefore(";") }
+    }
+
+    /**
+     * Fetch CSRF token and establish cookie session with SillyTavern server.
+     */
+    private fun ensureCsrfAndCookie(baseUrl: String) {
+        if (!csrfToken.isNullOrBlank() && !sessionCookie.isNullOrBlank()) {
+            return
+        }
+        try {
+            val url = URL("$baseUrl/csrf-token")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 6_000
+            conn.readTimeout = 6_000
+            if (!sessionCookie.isNullOrBlank()) {
+                conn.setRequestProperty("Cookie", sessionCookie)
+            }
+
+            val code = conn.responseCode
+            val cookies = extractCookies(conn)
+            if (!cookies.isNullOrBlank()) {
+                sessionCookie = cookies
+            }
+
+            val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+            val text = BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8)).use { it.readText() }
+            val obj = JSONObject(text)
+            csrfToken = obj.optString("token", "")
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Executes HTTP POST request with CSRF token and Cookie session.
+     */
+    private fun postJson(urlStr: String, jsonBody: String, timeoutMs: Int = 30_000, retryOn403: Boolean = true): String {
+        val baseUrl = if (urlStr.contains("/api/")) urlStr.substringBefore("/api/") else urlStr.substringBeforeLast('/')
+        ensureCsrfAndCookie(baseUrl)
+
         val url = URL(urlStr)
         val conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
@@ -27,6 +83,13 @@ object NativeChatApi {
         conn.setRequestProperty("Accept", "application/json")
         conn.connectTimeout = 10_000
         conn.readTimeout = timeoutMs
+
+        if (!sessionCookie.isNullOrBlank()) {
+            conn.setRequestProperty("Cookie", sessionCookie)
+        }
+        if (!csrfToken.isNullOrBlank()) {
+            conn.setRequestProperty("x-csrf-token", csrfToken)
+        }
         conn.doOutput = true
 
         OutputStreamWriter(conn.outputStream, StandardCharsets.UTF_8).use { writer ->
@@ -34,7 +97,20 @@ object NativeChatApi {
             writer.flush()
         }
 
+        val newCookies = extractCookies(conn)
+        if (!newCookies.isNullOrBlank()) {
+            sessionCookie = newCookies
+        }
+
         val code = conn.responseCode
+        if (code == 403 && retryOn403) {
+            // CSRF token or session may have rotated; invalidate and retry once
+            csrfToken = null
+            sessionCookie = null
+            ensureCsrfAndCookie(baseUrl)
+            return postJson(urlStr, jsonBody, timeoutMs, retryOn403 = false)
+        }
+
         val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
         val response = BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8)).use { it.readText() }
 
@@ -46,12 +122,15 @@ object NativeChatApi {
 
     /**
      * Fetch all characters installed in local SillyTavern.
+     * Uses HTTP API with CSRF token and merges with local disk characters.
      */
-    suspend fun getCharacters(baseUrl: String): List<StCharacter> = withContext(Dispatchers.IO) {
+    suspend fun getCharacters(baseUrl: String, localCharacterDirs: List<File> = emptyList()): List<StCharacter> = withContext(Dispatchers.IO) {
+        val characterList = mutableListOf<StCharacter>()
+
+        // 1. Try HTTP API (with CSRF and session cookies)
         try {
             val responseText = postJson("$baseUrl/api/characters/all", "{}")
             val array = JSONArray(responseText)
-            val list = mutableListOf<StCharacter>()
 
             for (i in 0 until array.length()) {
                 val obj = array.optJSONObject(i) ?: continue
@@ -77,7 +156,7 @@ object NativeChatApi {
                     }
                 }
 
-                list.add(
+                characterList.add(
                     StCharacter(
                         avatar = avatar,
                         name = name,
@@ -92,10 +171,89 @@ object NativeChatApi {
                     )
                 )
             }
-            list.sortedByDescending { it.dateLastChat }
         } catch (e: Exception) {
             e.printStackTrace()
-            emptyList()
+        }
+
+        // 2. Scan local disk directories and merge any missing characters
+        for (dir in localCharacterDirs) {
+            if (dir.exists() && dir.isDirectory) {
+                val files = dir.listFiles { _, name -> name.endsWith(".png", ignoreCase = true) } ?: continue
+                for (f in files) {
+                    if (characterList.none { it.avatar.equals(f.name, ignoreCase = true) }) {
+                        val parsed = parseLocalPngCard(f)
+                        if (parsed != null) {
+                            characterList.add(parsed)
+                        }
+                    }
+                }
+            }
+        }
+
+        characterList.sortedByDescending { it.dateLastChat }
+    }
+
+    /**
+     * Parse a Tavern character card PNG directly from disk.
+     * Looks for tEXt chunk with keyword "chara" or "ccv3" containing Base64 JSON.
+     */
+    fun parseLocalPngCard(file: File): StCharacter? {
+        try {
+            val bytes = file.readBytes()
+            if (bytes.size < 8) return null
+            var offset = 8
+            while (offset + 8 <= bytes.size) {
+                val length = ((bytes[offset].toInt() and 0xFF) shl 24) or
+                        ((bytes[offset + 1].toInt() and 0xFF) shl 16) or
+                        ((bytes[offset + 2].toInt() and 0xFF) shl 8) or
+                        (bytes[offset + 3].toInt() and 0xFF)
+                offset += 4
+                val type = String(bytes, offset, 4, StandardCharsets.US_ASCII)
+                offset += 4
+                if (offset + length > bytes.size) break
+
+                if (type == "tEXt") {
+                    val chunkData = bytes.copyOfRange(offset, offset + length)
+                    val nullIdx = chunkData.indexOf(0.toByte())
+                    if (nullIdx > 0) {
+                        val keyword = String(chunkData, 0, nullIdx, StandardCharsets.ISO_8859_1)
+                        if (keyword.equals("chara", ignoreCase = true) || keyword.equals("ccv3", ignoreCase = true)) {
+                            val b64 = String(chunkData, nullIdx + 1, chunkData.size - nullIdx - 1, StandardCharsets.ISO_8859_1)
+                            val jsonBytes = Base64.decode(b64, Base64.DEFAULT)
+                            val jsonStr = String(jsonBytes, StandardCharsets.UTF_8)
+                            val obj = JSONObject(jsonStr)
+                            val name = obj.optString("name", "").ifBlank {
+                                obj.optJSONObject("data")?.optString("name", "") ?: file.nameWithoutExtension
+                            }
+                            val dataObj = obj.optJSONObject("data")
+                            val desc = dataObj?.optString("description", "") ?: obj.optString("description", "")
+                            val personality = dataObj?.optString("personality", "") ?: obj.optString("personality", "")
+                            val firstMes = dataObj?.optString("first_mes", "") ?: obj.optString("first_mes", "")
+                            val scenario = dataObj?.optString("scenario", "") ?: obj.optString("scenario", "")
+
+                            return StCharacter(
+                                avatar = file.name,
+                                name = name,
+                                description = desc,
+                                personality = personality,
+                                firstMessage = firstMes,
+                                scenario = scenario,
+                                dateLastChat = file.lastModified()
+                            )
+                        }
+                    }
+                }
+                offset += length + 4 // Skip data + CRC
+            }
+
+            // Fallback: character card with filename as name
+            return StCharacter(
+                avatar = file.name,
+                name = file.nameWithoutExtension.replace('_', ' ').replace('-', ' '),
+                dateLastChat = file.lastModified()
+            )
+        } catch (e: Exception) {
+            return null
         }
     }
 
@@ -151,7 +309,6 @@ object NativeChatApi {
 
             for (i in 0 until array.length()) {
                 val obj = array.optJSONObject(i) ?: continue
-                // Skip header object that has chat_metadata
                 if (obj.has("chat_metadata") && !obj.has("mes")) {
                     continue
                 }
@@ -269,14 +426,12 @@ object NativeChatApi {
             systemPromptParts.add("You are roleplaying as ${character.name}. Stay in character. Respond concisely and engagingly. User's name is $userName.")
             val systemPrompt = systemPromptParts.joinToString("\n\n")
 
-            // Construct Chat Completion Messages
             val messagesArray = JSONArray()
             messagesArray.put(JSONObject().apply {
                 put("role", "system")
                 put("content", systemPrompt)
             })
 
-            // Add previous recent messages (last 20 messages for context)
             val recentHistory = history.takeLast(20)
             for (m in recentHistory) {
                 if (m.isGenerating || m.text.isBlank()) continue
@@ -286,13 +441,11 @@ object NativeChatApi {
                 })
             }
 
-            // Add the new user message
             messagesArray.put(JSONObject().apply {
                 put("role", "user")
                 put("content", userMessage)
             })
 
-            // Model parameters
             val model = when (mainApi) {
                 "openrouter" -> settings?.optString("model_openrouter", "anthropic/claude-3.5-sonnet") ?: "anthropic/claude-3.5-sonnet"
                 "claude" -> settings?.optString("model_claude", "claude-3-5-sonnet-20241022") ?: "claude-3-5-sonnet-20241022"
@@ -313,7 +466,6 @@ object NativeChatApi {
             val responseText = postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)
             val resObj = JSONObject(responseText)
 
-            // Extract completion choices
             val choices = resObj.optJSONArray("choices")
             if (choices != null && choices.length() > 0) {
                 val firstChoice = choices.getJSONObject(0)
@@ -324,13 +476,12 @@ object NativeChatApi {
                 }
             }
 
-            // Fallback: check text field
             val directText = resObj.optString("text", "").trim()
             if (directText.isNotBlank()) {
                 return@withContext Result.success(directText)
             }
 
-            Result.failure(Exception("Received empty response from AI backend. Please verify your API key and model selection."))
+            Result.failure(Exception("Received empty response from AI backend. Please verify your API key and model in SillyTavern settings."))
         } catch (e: Exception) {
             e.printStackTrace()
             Result.failure(e)

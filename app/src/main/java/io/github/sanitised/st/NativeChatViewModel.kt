@@ -2,10 +2,12 @@ package io.github.sanitised.st
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -37,9 +39,11 @@ class NativeChatViewModel : ViewModel() {
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     private var currentBaseUrl: String = "http://127.0.0.1:8000"
+    private var localCharacterDirs: List<File> = emptyList()
 
-    fun setBaseUrl(url: String) {
-        currentBaseUrl = url.trimEnd('/')
+    fun setConfig(baseUrl: String, localDirs: List<File>) {
+        currentBaseUrl = baseUrl.trimEnd('/')
+        localCharacterDirs = localDirs
     }
 
     fun loadCharacters(initialAvatar: String? = null) {
@@ -47,7 +51,13 @@ class NativeChatViewModel : ViewModel() {
             _isLoadingCharacters.value = true
             _errorMessage.value = null
             try {
-                val list = NativeChatApi.getCharacters(currentBaseUrl)
+                var list = NativeChatApi.getCharacters(currentBaseUrl, localCharacterDirs)
+                if (list.isEmpty()) {
+                    // Retry once after 1.5s in case Node.js server was completing startup
+                    delay(1500)
+                    list = NativeChatApi.getCharacters(currentBaseUrl, localCharacterDirs)
+                }
+
                 _characters.value = list
                 if (list.isNotEmpty()) {
                     val target = if (!initialAvatar.isNullOrBlank()) {
@@ -70,7 +80,6 @@ class NativeChatViewModel : ViewModel() {
         viewModelScope.launch {
             _isLoadingMessages.value = true
             try {
-                // Fetch chats for this character
                 val chats = NativeChatApi.getCharacterChats(currentBaseUrl, character.avatar)
                 if (chats.isNotEmpty()) {
                     val latestChat = chats.first()
@@ -107,12 +116,16 @@ class NativeChatViewModel : ViewModel() {
         _messages.value = list
     }
 
-    fun createNewChat(character: StCharacter? = _selectedCharacter.value) {
-        if (character == null) return
+    fun createNewChat(character: StCharacter? = _selectedCharacter.value): Boolean {
+        val targetChar = character ?: _characters.value.firstOrNull()
+        if (targetChar == null) return false
+
+        _selectedCharacter.value = targetChar
         val newFileName = SimpleDateFormat("yyyy-MM-dd @HH'h' mm'm' ss's'", Locale.US).format(Date())
         _activeChatFileName.value = newFileName
-        initNewChatMessages(character)
+        initNewChatMessages(targetChar)
         saveCurrentChat()
+        return true
     }
 
     fun sendMessage(userText: String, userName: String = "User") {
@@ -140,7 +153,6 @@ class NativeChatViewModel : ViewModel() {
         _errorMessage.value = null
 
         viewModelScope.launch {
-            // Optimistically save user message
             saveCurrentChat(messagesToSave = updatedList)
 
             val result = NativeChatApi.generateReply(
@@ -175,13 +187,11 @@ class NativeChatViewModel : ViewModel() {
         val list = _messages.value.toMutableList()
         if (list.isEmpty() || _isGenerating.value) return
 
-        // If last message is assistant, remove it
         if (!list.last().isUser) {
             list.removeAt(list.lastIndex)
         }
         if (list.isEmpty()) return
 
-        // The preceding message should be user
         val lastUserMsg = list.lastOrNull { it.isUser } ?: return
         val prompt = lastUserMsg.text
 
