@@ -115,7 +115,16 @@ object NativeChatApi {
         val response = BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8)).use { it.readText() }
 
         if (code !in 200..299) {
-            throw Exception("HTTP $code from $urlStr: $response")
+            val cleanMsg = try {
+                val json = JSONObject(response)
+                val errObj = json.optJSONObject("error")
+                errObj?.optString("message", "")?.takeIf { it.isNotBlank() }
+                    ?: json.optString("message", "").takeIf { it.isNotBlank() }
+                    ?: response
+            } catch (_: Exception) {
+                response
+            }
+            throw Exception(cleanMsg)
         }
         return response
     }
@@ -450,17 +459,25 @@ object NativeChatApi {
 
         val provider = settings.optString("main_api", "makersuite").ifBlank { "makersuite" }
         val modelKey = "model_$provider"
-        val model = settings.optString(modelKey, "").ifBlank {
+        var model = settings.optString(modelKey, "").ifBlank {
             settings.optString("model", "").ifBlank {
                 when (provider) {
-                    "makersuite" -> "gemini-2.0-flash"
-                    "openrouter" -> "anthropic/claude-3.5-sonnet"
-                    "claude" -> "claude-3-5-sonnet-20241022"
+                    "makersuite" -> "gemini-3.8-flash"
+                    "openrouter" -> "anthropic/claude-3.7-sonnet"
+                    "claude" -> "claude-3-7-sonnet-20250219"
                     "deepseek" -> "deepseek-chat"
                     "groq" -> "llama-3.3-70b-versatile"
                     else -> "gpt-4o"
                 }
             }
+        }
+
+        // Proactively upgrade deprecated Google AI Studio models to gemini-3.8-flash
+        if (provider == "makersuite" && (model.contains("gemini-2.0") || model == "gemini-1.5-pro-latest")) {
+            model = "gemini-3.8-flash"
+            settings.put(modelKey, model)
+            settings.put("model", model)
+            saveSettings(baseUrl, settings)
         }
 
         val secretKeyName = when (provider) {
@@ -620,16 +637,25 @@ object NativeChatApi {
             })
 
             val modelKey = "model_$mainApi"
-            val model = settings?.optString(modelKey, "").takeIf { !it.isNullOrBlank() }
+            var model = settings?.optString(modelKey, "").takeIf { !it.isNullOrBlank() }
                 ?: settings?.optString("model", "").takeIf { !it.isNullOrBlank() }
                 ?: when (mainApi) {
-                    "makersuite" -> "gemini-2.0-flash"
-                    "openrouter" -> "anthropic/claude-3.5-sonnet"
-                    "claude" -> "claude-3-5-sonnet-20241022"
+                    "makersuite" -> "gemini-3.8-flash"
+                    "openrouter" -> "anthropic/claude-3.7-sonnet"
+                    "claude" -> "claude-3-7-sonnet-20250219"
                     "deepseek" -> "deepseek-chat"
                     "groq" -> "llama-3.3-70b-versatile"
                     else -> "gpt-4o"
                 }
+
+            // Proactively replace deprecated gemini-2.0-flash with gemini-3.8-flash
+            if (mainApi == "makersuite" && model.contains("gemini-2.0-flash")) {
+                model = "gemini-3.8-flash"
+                settings?.put(modelKey, model)
+                settings?.put("model", model)
+                if (settings != null) saveSettings(baseUrl, settings)
+            }
+
             val temp = settings?.optDouble("temperature", 0.9) ?: 0.9
             val maxTokens = settings?.optInt("max_length", 800) ?: 800
 
@@ -646,7 +672,31 @@ object NativeChatApi {
                 }
             }
 
-            val responseText = postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)
+            val responseText = try {
+                postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)
+            } catch (postEx: Exception) {
+                val errorMsg = postEx.message.orEmpty()
+                // Auto-healing: If Google recommends a specific model, e.g. "use models/gemini-3.8-flash"
+                val match = Regex("use models/([a-zA-Z0-9._-]+)", RegexOption.IGNORE_CASE).find(errorMsg)
+                if (match != null && mainApi == "makersuite") {
+                    val recommendedModel = match.groupValues[1]
+                    try {
+                        val currentSettings = getSettings(baseUrl) ?: JSONObject()
+                        currentSettings.put("main_api", "makersuite")
+                        currentSettings.put("model_makersuite", recommendedModel)
+                        currentSettings.put("model", recommendedModel)
+                        saveSettings(baseUrl, currentSettings)
+
+                        // Immediately retry with recommended model
+                        requestBody.put("model", recommendedModel)
+                        postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)
+                    } catch (_: Exception) {
+                        throw postEx
+                    }
+                } else {
+                    throw postEx
+                }
+            }
             val resObj = JSONObject(responseText)
 
             // Inspect for backend or provider error messages
@@ -676,7 +726,15 @@ object NativeChatApi {
             Result.failure(Exception("Received empty response from AI backend. Please verify your API key and model."))
         } catch (e: Exception) {
             e.printStackTrace()
-            Result.failure(e)
+            val rawMsg = e.message.orEmpty()
+            val clean = try {
+                if (rawMsg.startsWith("{") && rawMsg.endsWith("}")) {
+                    val j = JSONObject(rawMsg)
+                    j.optJSONObject("error")?.optString("message", "")?.takeIf { it.isNotBlank() }
+                        ?: j.optString("message", "").takeIf { it.isNotBlank() } ?: rawMsg
+                } else rawMsg
+            } catch (_: Exception) { rawMsg }
+            Result.failure(Exception(clean))
         }
     }
 }

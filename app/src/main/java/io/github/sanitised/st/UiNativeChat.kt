@@ -424,32 +424,62 @@ fun StNativeChatScreen(
             enter = fadeIn(),
             exit = fadeOut()
         ) {
+            val errText = errorMessage ?: ""
+            val suggestedModel = remember(errText) {
+                Regex("use models/([a-zA-Z0-9._-]+)", RegexOption.IGNORE_CASE).find(errText)?.groupValues?.get(1)
+            }
+
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = Color(0xFF450A0A)
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
                 ) {
-                    Text(
-                        text = errorMessage ?: "",
-                        color = Color(0xFFFCA5A5),
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(
-                        onClick = { viewModel.dismissError() },
-                        modifier = Modifier.size(24.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Dismiss",
-                            tint = Color(0xFFFCA5A5)
+                        Text(
+                            text = errText,
+                            color = Color(0xFFFCA5A5),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
                         )
+                        IconButton(
+                            onClick = { viewModel.dismissError() },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Dismiss",
+                                tint = Color(0xFFFCA5A5)
+                            )
+                        }
+                    }
+
+                    if (suggestedModel != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Button(
+                            onClick = {
+                                viewModel.saveAiSettings(aiSettings.copy(model = suggestedModel)) {
+                                    viewModel.dismissError()
+                                }
+                            },
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text(
+                                text = "Switch to $suggestedModel & Retry",
+                                fontSize = 11.sp,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
@@ -948,31 +978,44 @@ data class GeminiModelPreset(
 )
 
 private val allGeminiPresets = listOf(
-    // Gemini 2.0 (Flagship & Recommended)
-    GeminiModelPreset("gemini-2.0-flash", "Gemini 2.0 Flash", "2.0", "⚡ Recommended"),
-    GeminiModelPreset("gemini-2.0-flash-exp", "Gemini 2.0 Flash Exp", "2.0", "Experimental"),
-    GeminiModelPreset("gemini-2.0-flash-thinking-exp-01-21", "Gemini 2.0 Flash Thinking", "2.0", "🧠 Thinking"),
-    GeminiModelPreset("gemini-2.0-flash-lite", "Gemini 2.0 Flash Lite", "2.0", "🚀 Fast Lite"),
-    GeminiModelPreset("gemini-2.0-flash-lite-preview-02-05", "Gemini 2.0 Flash Lite Preview", "2.0", "Preview"),
-    GeminiModelPreset("gemini-2.0-pro-exp-02-05", "Gemini 2.0 Pro Exp", "2.0", "💎 Pro Exp"),
-    // Gemini 2.5 (Next-Gen Preview)
-    GeminiModelPreset("gemini-2.5-pro", "Gemini 2.5 Pro", "2.5", "🌟 Preview"),
-    GeminiModelPreset("gemini-2.5-flash", "Gemini 2.5 Flash", "2.5", "⚡ Fast"),
-    // Gemini 1.5 Pro
-    GeminiModelPreset("gemini-1.5-pro-latest", "Gemini 1.5 Pro Latest", "1.5", "📚 2M Context"),
-    GeminiModelPreset("gemini-1.5-pro-002", "Gemini 1.5 Pro 002", "1.5", "Stable"),
-    GeminiModelPreset("gemini-1.5-pro-001", "Gemini 1.5 Pro 001", "1.5", null),
-    GeminiModelPreset("gemini-1.5-pro", "Gemini 1.5 Pro", "1.5", "Standard"),
-    // Gemini 1.5 Flash
-    GeminiModelPreset("gemini-1.5-flash-latest", "Gemini 1.5 Flash Latest", "1.5", "⚡ Fast"),
-    GeminiModelPreset("gemini-1.5-flash-002", "Gemini 1.5 Flash 002", "1.5", "Stable"),
-    GeminiModelPreset("gemini-1.5-flash-001", "Gemini 1.5 Flash 001", "1.5", null),
-    GeminiModelPreset("gemini-1.5-flash", "Gemini 1.5 Flash", "1.5", "Standard"),
-    GeminiModelPreset("gemini-1.5-flash-8b", "Gemini 1.5 Flash 8B", "1.5", "🏎️ 8B Fast"),
-    GeminiModelPreset("gemini-1.5-flash-8b-latest", "Gemini 1.5 Flash 8B Latest", "1.5", "8B Latest"),
+    // Gemini 3.8 Series (CURRENT FLAGSHIP 2026)
+    GeminiModelPreset("gemini-3.8-flash", "Gemini 3.8 Flash", "3.8", "⚡ Recommended Flagship"),
+    GeminiModelPreset("gemini-3.8-pro", "Gemini 3.8 Pro", "3.8", "💎 Frontier Reasoning"),
+    GeminiModelPreset("gemini-3.8-live", "Gemini 3.8 Live", "3.8", "🎙️ Live Voice"),
+    GeminiModelPreset("gemini-3.8-live-extended-thinking", "Gemini 3.8 Live Thinking", "3.8", "🧠 Deep Thinking"),
+    GeminiModelPreset("gemini-3.8-flash-tts", "Gemini 3.8 Flash TTS", "3.8", "TTS Audio"),
+
+    // Gemini 3.7 / 3.6 / 3.5 Series
+    GeminiModelPreset("gemini-3.7-flash", "Gemini 3.7 Flash", "3.x", "⚡ Multimodal"),
+    GeminiModelPreset("gemini-3.6-flash", "Gemini 3.6 Flash", "3.x", "High Speed"),
+    GeminiModelPreset("gemini-3.5-pro", "Gemini 3.5 Pro", "3.x", "📚 1M Context"),
+    GeminiModelPreset("gemini-3.5-flash", "Gemini 3.5 Flash", "3.x", "Fast"),
+    GeminiModelPreset("gemini-3.1-pro", "Gemini 3.1 Pro", "3.x", "Logic Pro"),
+
+    // Gemini 3.0 Series
+    GeminiModelPreset("gemini-3.0-pro", "Gemini 3.0 Pro", "3.0", "Frontier 3.0"),
+    GeminiModelPreset("gemini-3.0-flash", "Gemini 3.0 Flash", "3.0", "Flash 3.0"),
+
+    // Gemini 4 Series
+    GeminiModelPreset("gemini-4-argon", "Gemini 4 Argon", "4.0", "🌟 Next-Era Flagship"),
+
+    // Gemini 2.5 Series
+    GeminiModelPreset("gemini-2.5-pro", "Gemini 2.5 Pro", "2.5", "High Context Pro"),
+    GeminiModelPreset("gemini-2.5-flash", "Gemini 2.5 Flash", "2.5", "Fast 2.5"),
+
+    // Gemini 1.5 Series
+    GeminiModelPreset("gemini-1.5-pro-latest", "Gemini 1.5 Pro Latest", "1.5", "2M Context"),
+    GeminiModelPreset("gemini-1.5-pro-002", "Gemini 1.5 Pro 002", "1.5", null),
+    GeminiModelPreset("gemini-1.5-pro", "Gemini 1.5 Pro", "1.5", null),
+    GeminiModelPreset("gemini-1.5-flash-latest", "Gemini 1.5 Flash Latest", "1.5", null),
+    GeminiModelPreset("gemini-1.5-flash-002", "Gemini 1.5 Flash 002", "1.5", null),
+    GeminiModelPreset("gemini-1.5-flash", "Gemini 1.5 Flash", "1.5", null),
+    GeminiModelPreset("gemini-1.5-flash-8b", "Gemini 1.5 Flash 8B", "1.5", "🏎️ 8B Flash"),
+
     // Gemma Open Models on AI Studio
     GeminiModelPreset("gemma-2-27b-it", "Gemma 2 27B IT", "Gemma", "Open Model"),
     GeminiModelPreset("gemma-2-9b-it", "Gemma 2 9B IT", "Gemma", "Open Model"),
+
     // Legacy
     GeminiModelPreset("gemini-1.0-pro", "Gemini 1.0 Pro", "1.5", "Legacy")
 )
@@ -989,9 +1032,9 @@ fun getProviderDisplayName(provider: String): String = when (provider.lowercase(
 }
 
 fun getDefaultModelForProvider(provider: String): String = when (provider) {
-    "makersuite" -> "gemini-2.0-flash"
-    "openrouter" -> "anthropic/claude-3.5-sonnet"
-    "claude" -> "claude-3-5-sonnet-20241022"
+    "makersuite" -> "gemini-3.8-flash"
+    "openrouter" -> "anthropic/claude-3.7-sonnet"
+    "claude" -> "claude-3-7-sonnet-20250219"
     "deepseek" -> "deepseek-chat"
     "groq" -> "llama-3.3-70b-versatile"
     else -> "gpt-4o"
@@ -1025,6 +1068,18 @@ fun AiSettingsSheetContent(
     var liveModelsList by remember { mutableStateOf<List<String>>(emptyList()) }
     var fetchStatusMessage by remember { mutableStateOf<String?>(null) }
 
+    LaunchedEffect(selectedProvider) {
+        if (selectedProvider == "makersuite" && aiSettings.hasExistingKey && liveModelsList.isEmpty()) {
+            isFetchingLiveModels = true
+            onFetchModels?.invoke("makersuite") { models ->
+                isFetchingLiveModels = false
+                if (models.isNotEmpty()) {
+                    liveModelsList = models
+                }
+            }
+        }
+    }
+
     val providers = listOf(
         "makersuite" to "✨ Google AI Studio (Gemini)",
         "openrouter" to "🌐 OpenRouter",
@@ -1037,18 +1092,24 @@ fun AiSettingsSheetContent(
 
     val standardPresets = when (selectedProvider) {
         "openrouter" -> listOf(
+            "anthropic/claude-3.7-sonnet",
             "anthropic/claude-3.5-sonnet",
             "deepseek/deepseek-chat",
+            "deepseek/deepseek-r1",
+            "google/gemini-2.5-pro",
+            "google/gemini-2.0-flash-001",
             "meta-llama/llama-3.3-70b-instruct",
-            "google/gemini-2.0-flash-exp:free",
+            "openai/gpt-4o",
             "openai/gpt-4o-mini",
+            "qwen/qwen-2.5-72b-instruct",
+            "mistralai/mistral-large-2411",
             "gryphe/mythomax-l2-13b"
         )
-        "openai" -> listOf("gpt-4o", "gpt-4o-mini", "o1-mini", "gpt-4-turbo")
-        "claude" -> listOf("claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229")
+        "openai" -> listOf("gpt-4o", "gpt-4o-mini", "o3-mini", "o1", "o1-mini", "gpt-4-turbo")
+        "claude" -> listOf("claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229")
         "deepseek" -> listOf("deepseek-chat", "deepseek-reasoner")
-        "groq" -> listOf("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it")
-        else -> listOf("gpt-4o", "anthropic/claude-3.5-sonnet")
+        "groq" -> listOf("llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b", "mixtral-8x7b-32768", "gemma2-9b-it")
+        else -> listOf("gpt-4o", "anthropic/claude-3.7-sonnet")
     }
 
     Column(
@@ -1296,12 +1357,15 @@ fun AiSettingsSheetContent(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                val categories = listOf("All", "2.0", "2.5", "1.5", "Gemma")
+                val categories = listOf("All", "3.8", "3.x", "3.0", "4.0", "2.5", "1.5", "Gemma")
                 for (cat in categories) {
                     val isCatSelected = selectedGeminiCategory == cat
                     val catLabel = when (cat) {
-                        "All" -> "All Models (${allGeminiPresets.size})"
-                        "2.0" -> "Gemini 2.0"
+                        "All" -> "All Models (${allGeminiPresets.size + liveModelsList.size})"
+                        "3.8" -> "⚡ Gemini 3.8 (Flagship)"
+                        "3.x" -> "Gemini 3.5 - 3.7"
+                        "3.0" -> "Gemini 3.0"
+                        "4.0" -> "Gemini 4"
                         "2.5" -> "Gemini 2.5"
                         "1.5" -> "Gemini 1.5"
                         "Gemma" -> "Gemma 2"
