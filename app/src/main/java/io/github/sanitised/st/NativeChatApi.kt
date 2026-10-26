@@ -2,6 +2,7 @@ package io.github.sanitised.st
 
 import android.util.Base64
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -596,7 +597,8 @@ object NativeChatApi {
         character: StCharacter,
         history: List<StChatMessage>,
         userMessage: String,
-        userName: String = "User"
+        userName: String = "User",
+        onStatusUpdate: ((String) -> Unit)? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val settings = getSettings(baseUrl)
@@ -672,28 +674,53 @@ object NativeChatApi {
                 }
             }
 
-            val responseText = try {
-                postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)
-            } catch (postEx: Exception) {
-                val errorMsg = postEx.message.orEmpty()
-                // Auto-healing: If Google recommends a specific model, e.g. "use models/gemini-3.8-flash"
-                val match = Regex("use models/([a-zA-Z0-9._-]+)", RegexOption.IGNORE_CASE).find(errorMsg)
-                if (match != null && mainApi == "makersuite") {
-                    val recommendedModel = match.groupValues[1]
-                    try {
-                        val currentSettings = getSettings(baseUrl) ?: JSONObject()
-                        currentSettings.put("main_api", "makersuite")
-                        currentSettings.put("model_makersuite", recommendedModel)
-                        currentSettings.put("model", recommendedModel)
-                        saveSettings(baseUrl, currentSettings)
+            val maxRetries = 3
+            var retryCount = 0
+            var responseText = ""
 
-                        // Immediately retry with recommended model
-                        requestBody.put("model", recommendedModel)
-                        postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)
-                    } catch (_: Exception) {
-                        throw postEx
+            while (retryCount < maxRetries) {
+                retryCount++
+                try {
+                    responseText = postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)
+                    break
+                } catch (postEx: Exception) {
+                    val errorMsg = postEx.message.orEmpty()
+
+                    // Auto-healing: If Google recommends a specific model, e.g. "use models/gemini-3.8-flash"
+                    val match = Regex("use models/([a-zA-Z0-9._-]+)", RegexOption.IGNORE_CASE).find(errorMsg)
+                    if (match != null && mainApi == "makersuite") {
+                        val recommendedModel = match.groupValues[1]
+                        try {
+                            val currentSettings = getSettings(baseUrl) ?: JSONObject()
+                            currentSettings.put("main_api", "makersuite")
+                            currentSettings.put("model_makersuite", recommendedModel)
+                            currentSettings.put("model", recommendedModel)
+                            saveSettings(baseUrl, currentSettings)
+
+                            // Immediately retry with recommended model
+                            requestBody.put("model", recommendedModel)
+                            responseText = postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)
+                            break
+                        } catch (_: Exception) {}
                     }
-                } else {
+
+                    // Auto-retry on High Demand / Resource Exhausted / Rate Limit / Timeout
+                    val isHighDemandOrTimeout = errorMsg.contains("RESOURCE_EXHAUSTED", ignoreCase = true) ||
+                            errorMsg.contains("overloaded", ignoreCase = true) ||
+                            errorMsg.contains("high demand", ignoreCase = true) ||
+                            errorMsg.contains("429", ignoreCase = true) ||
+                            errorMsg.contains("503", ignoreCase = true) ||
+                            errorMsg.contains("timed out", ignoreCase = true) ||
+                            errorMsg.contains("timeout", ignoreCase = true) ||
+                            errorMsg.contains("quota", ignoreCase = true)
+
+                    if (isHighDemandOrTimeout && retryCount < maxRetries) {
+                        val waitSec = retryCount * 2
+                        onStatusUpdate?.invoke("High demand. Retrying in ${waitSec}s ($retryCount/$maxRetries)...")
+                        delay(waitSec * 1000L)
+                        continue
+                    }
+
                     throw postEx
                 }
             }
@@ -714,12 +741,14 @@ object NativeChatApi {
                 val msg = firstChoice.optJSONObject("message")
                 val content = msg?.optString("content", "")?.trim()
                 if (!content.isNullOrBlank()) {
+                    onStatusUpdate?.invoke("")
                     return@withContext Result.success(content)
                 }
             }
 
             val directText = resObj.optString("text", "").trim()
             if (directText.isNotBlank()) {
+                onStatusUpdate?.invoke("")
                 return@withContext Result.success(directText)
             }
 

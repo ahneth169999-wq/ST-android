@@ -62,6 +62,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SmartToy
@@ -239,6 +240,7 @@ fun StNativeChatScreen(
     val isLoadingMessages by viewModel.isLoadingMessages.collectAsState()
     val isLoadingCharacters by viewModel.isLoadingCharacters.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val statusMessage by viewModel.statusMessage.collectAsState()
     val aiSettings by viewModel.aiSettings.collectAsState()
 
     var inputPrompt by remember { mutableStateOf("") }
@@ -461,24 +463,52 @@ fun StNativeChatScreen(
                         }
                     }
 
-                    if (suggestedModel != null) {
-                        Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Button(
-                            onClick = {
-                                viewModel.saveAiSettings(aiSettings.copy(model = suggestedModel)) {
-                                    viewModel.dismissError()
-                                }
-                            },
+                            onClick = { viewModel.retryLastMessage() },
                             colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
                             shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.height(32.dp)
+                            modifier = Modifier.height(32.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                         ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Switch to $suggestedModel & Retry",
-                                fontSize = 11.sp,
+                                text = "Retry",
+                                fontSize = 12.sp,
                                 color = Color.White,
                                 fontWeight = FontWeight.Bold
                             )
+                        }
+
+                        if (suggestedModel != null) {
+                            Button(
+                                onClick = {
+                                    viewModel.saveAiSettings(aiSettings.copy(model = suggestedModel)) {
+                                        viewModel.retryLastMessage()
+                                    }
+                                },
+                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = ColorAccentViolet),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.height(32.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "Switch to $suggestedModel & Retry",
+                                    fontSize = 11.sp,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }
@@ -576,11 +606,21 @@ fun StNativeChatScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     itemsIndexed(messages, key = { index, msg -> "${msg.id}-$index" }) { index, msg ->
+                        val isLast = (index == messages.lastIndex)
                         MessageBubble(
                             message = msg,
                             character = selectedCharacter,
                             baseUrl = baseUrl,
                             localCharacterDirs = localCharacterDirs,
+                            isLastMessage = isLast,
+                            statusText = statusMessage,
+                            onContinue = { viewModel.continueLastMessage() },
+                            onRegenerate = { viewModel.regenerateLastMessage() },
+                            onCopy = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("SillyTavern", msg.text))
+                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                            },
                             onClick = { selectedMessageForMenu = Pair(index, msg) }
                         )
                     }
@@ -596,12 +636,109 @@ fun StNativeChatScreen(
             color = ColorSurfaceCard,
             tonalElevation = 6.dp
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Quick Action Bar: Regenerate & Continue (when last message is from assistant and not generating)
+                AnimatedVisibility(
+                    visible = messages.isNotEmpty() && !messages.last().isUser && !isGenerating,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Regenerate Button
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xFF191B26),
+                            border = BorderStroke(1.dp, ColorCardBorder),
+                            modifier = Modifier.clickable { viewModel.regenerateLastMessage() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Regenerate",
+                                    tint = ColorAccentCyan,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Regenerate",
+                                    color = ColorAccentCyan,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        // Continue Button
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xFF191B26),
+                            border = BorderStroke(1.dp, ColorCardBorder),
+                            modifier = Modifier.clickable { viewModel.continueLastMessage() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Continue",
+                                    tint = ColorAccentViolet,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Continue",
+                                    color = ColorAccentViolet,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Status Message (Auto-retry feedback / Model migration status)
+                AnimatedVisibility(
+                    visible = statusMessage != null,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            color = ColorAccentCyan,
+                            strokeWidth = 1.5.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = statusMessage.orEmpty(),
+                            color = ColorAccentCyan,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -901,6 +1038,21 @@ fun StNativeChatScreen(
                         Spacer(modifier = Modifier.width(14.dp))
                         Text(text = "Regenerate Response", color = ColorAccentCyan)
                     }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                selectedMessageForMenu = null
+                                viewModel.continueLastMessage()
+                            }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Continue", tint = ColorAccentViolet)
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Text(text = "Continue Response", color = ColorAccentViolet)
+                    }
                 }
 
                 Row(
@@ -980,17 +1132,20 @@ data class GeminiModelPreset(
 private val allGeminiPresets = listOf(
     // Gemini 3.8 Series (CURRENT FLAGSHIP 2026)
     GeminiModelPreset("gemini-3.8-flash", "Gemini 3.8 Flash", "3.8", "⚡ Recommended Flagship"),
+    GeminiModelPreset("gemini-3.8-flash-lite", "Gemini 3.8 Flash-Lite", "3.8", "⚡ Lightweight"),
     GeminiModelPreset("gemini-3.8-pro", "Gemini 3.8 Pro", "3.8", "💎 Frontier Reasoning"),
     GeminiModelPreset("gemini-3.8-live", "Gemini 3.8 Live", "3.8", "🎙️ Live Voice"),
     GeminiModelPreset("gemini-3.8-live-extended-thinking", "Gemini 3.8 Live Thinking", "3.8", "🧠 Deep Thinking"),
     GeminiModelPreset("gemini-3.8-flash-tts", "Gemini 3.8 Flash TTS", "3.8", "TTS Audio"),
 
-    // Gemini 3.7 / 3.6 / 3.5 Series
+    // Gemini 3.1 & 3.x Flash-Lite Series (High Speed / Low Latency)
+    GeminiModelPreset("gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite", "3.x", "⚡ Super Fast Lite"),
+    GeminiModelPreset("gemini-3.1-flash", "Gemini 3.1 Flash", "3.x", "Fast"),
+    GeminiModelPreset("gemini-3.1-pro", "Gemini 3.1 Pro", "3.x", "Logic Pro"),
     GeminiModelPreset("gemini-3.7-flash", "Gemini 3.7 Flash", "3.x", "⚡ Multimodal"),
     GeminiModelPreset("gemini-3.6-flash", "Gemini 3.6 Flash", "3.x", "High Speed"),
     GeminiModelPreset("gemini-3.5-pro", "Gemini 3.5 Pro", "3.x", "📚 1M Context"),
     GeminiModelPreset("gemini-3.5-flash", "Gemini 3.5 Flash", "3.x", "Fast"),
-    GeminiModelPreset("gemini-3.1-pro", "Gemini 3.1 Pro", "3.x", "Logic Pro"),
 
     // Gemini 3.0 Series
     GeminiModelPreset("gemini-3.0-pro", "Gemini 3.0 Pro", "3.0", "Frontier 3.0"),
@@ -1363,7 +1518,7 @@ fun AiSettingsSheetContent(
                     val catLabel = when (cat) {
                         "All" -> "All Models (${allGeminiPresets.size + liveModelsList.size})"
                         "3.8" -> "⚡ Gemini 3.8 (Flagship)"
-                        "3.x" -> "Gemini 3.5 - 3.7"
+                        "3.x" -> "⚡ Gemini 3.1 - 3.7"
                         "3.0" -> "Gemini 3.0"
                         "4.0" -> "Gemini 4"
                         "2.5" -> "Gemini 2.5"
@@ -1725,6 +1880,11 @@ fun MessageBubble(
     character: StCharacter?,
     baseUrl: String,
     localCharacterDirs: List<File> = emptyList(),
+    isLastMessage: Boolean = false,
+    statusText: String? = null,
+    onContinue: (() -> Unit)? = null,
+    onRegenerate: (() -> Unit)? = null,
+    onCopy: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     if (message.isGenerating) {
@@ -1741,7 +1901,7 @@ fun MessageBubble(
                 sizeDp = 32
             )
             Spacer(modifier = Modifier.width(8.dp))
-            TypingShimmer()
+            TypingShimmer(statusText = statusText)
         }
         return
     }
@@ -1799,6 +1959,57 @@ fun MessageBubble(
                         Spacer(modifier = Modifier.height(3.dp))
                     }
                     FormattedMessageText(text = message.text, isUser = isUser)
+
+                    if (!isUser) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (onCopy != null) {
+                                IconButton(
+                                    onClick = onCopy,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy",
+                                        tint = ColorTextSecondary.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            }
+                            if (isLastMessage && onContinue != null) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                IconButton(
+                                    onClick = onContinue,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Continue",
+                                        tint = ColorAccentViolet,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
+                            }
+                            if (isLastMessage && onRegenerate != null) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                IconButton(
+                                    onClick = onRegenerate,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Regenerate",
+                                        tint = ColorAccentCyan,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1873,7 +2084,7 @@ fun FormattedMessageText(text: String, isUser: Boolean) {
 }
 
 @Composable
-fun TypingShimmer() {
+fun TypingShimmer(statusText: String? = null) {
     val transition = rememberInfiniteTransition(label = "typing")
     val alpha1 by transition.animateFloat(
         initialValue = 0.2f,
@@ -1934,8 +2145,8 @@ fun TypingShimmer() {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "Thinking...",
-                color = ColorTextSecondary,
+                text = statusText ?: "Thinking...",
+                color = if (statusText != null) ColorAccentCyan else ColorTextSecondary,
                 fontSize = 12.sp,
                 fontStyle = FontStyle.Italic
             )

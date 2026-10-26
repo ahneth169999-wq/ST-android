@@ -38,6 +38,9 @@ class NativeChatViewModel : ViewModel() {
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private val _statusMessage = MutableStateFlow<String?>(null)
+    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
+
     private val _aiSettings = MutableStateFlow(AiSettings())
     val aiSettings: StateFlow<AiSettings> = _aiSettings.asStateFlow()
 
@@ -215,7 +218,8 @@ class NativeChatViewModel : ViewModel() {
                 character = character,
                 history = updatedList,
                 userMessage = trimmed,
-                userName = userName
+                userName = userName,
+                onStatusUpdate = { _statusMessage.value = it }
             )
 
             result.onSuccess { replyText ->
@@ -228,9 +232,11 @@ class NativeChatViewModel : ViewModel() {
                 val finalList = updatedList + assistantMessage
                 _messages.value = finalList
                 saveCurrentChat(messagesToSave = finalList)
+                _statusMessage.value = null
             }.onFailure { err ->
                 _messages.value = updatedList
                 _errorMessage.value = err.message ?: "Failed to generate reply"
+                _statusMessage.value = null
             }
 
             _isGenerating.value = false
@@ -267,7 +273,8 @@ class NativeChatViewModel : ViewModel() {
                 character = character,
                 history = list,
                 userMessage = prompt,
-                userName = userName
+                userName = userName,
+                onStatusUpdate = { _statusMessage.value = it }
             )
 
             result.onSuccess { replyText ->
@@ -280,9 +287,117 @@ class NativeChatViewModel : ViewModel() {
                 val finalList = list + assistantMessage
                 _messages.value = finalList
                 saveCurrentChat(messagesToSave = finalList)
+                _statusMessage.value = null
             }.onFailure { err ->
                 _messages.value = list
                 _errorMessage.value = err.message ?: "Failed to regenerate reply"
+                _statusMessage.value = null
+            }
+
+            _isGenerating.value = false
+        }
+    }
+
+    fun continueLastMessage(userName: String = "User") {
+        val character = _selectedCharacter.value ?: return
+        val list = _messages.value
+        if (list.isEmpty() || _isGenerating.value) return
+        val lastAssistantMsg = list.lastOrNull()
+        if (lastAssistantMsg == null || lastAssistantMsg.isUser) return
+
+        val existingText = lastAssistantMsg.text
+        val tempPlaceholder = StChatMessage(
+            name = character.name,
+            isUser = false,
+            text = existingText,
+            isGenerating = true
+        )
+
+        val listWithoutLast = list.dropLast(1)
+        _messages.value = listWithoutLast + tempPlaceholder
+        _isGenerating.value = true
+        _errorMessage.value = null
+
+        viewModelScope.launch {
+            val result = NativeChatApi.generateReply(
+                baseUrl = currentBaseUrl,
+                character = character,
+                history = list,
+                userMessage = "[Continue your previous response directly from where you left off. Do not repeat what you already wrote.]",
+                userName = userName,
+                onStatusUpdate = { _statusMessage.value = it }
+            )
+
+            result.onSuccess { continuationText ->
+                val combinedText = if (existingText.isNotBlank()) {
+                    "$existingText $continuationText"
+                } else {
+                    continuationText
+                }
+                val updatedMessage = lastAssistantMsg.copy(text = combinedText.trim())
+                val finalList = listWithoutLast + updatedMessage
+                _messages.value = finalList
+                saveCurrentChat(messagesToSave = finalList)
+                _statusMessage.value = null
+            }.onFailure { err ->
+                _messages.value = list
+                _errorMessage.value = err.message ?: "Failed to continue reply"
+                _statusMessage.value = null
+            }
+
+            _isGenerating.value = false
+        }
+    }
+
+    fun retryLastMessage(userName: String = "User") {
+        val character = _selectedCharacter.value ?: return
+        val list = _messages.value
+        val lastUserMsg = list.lastOrNull { it.isUser } ?: return
+        val userPrompt = lastUserMsg.text
+
+        // Clean any failed trailing assistant messages
+        val cleanedList = if (list.isNotEmpty() && !list.last().isUser) {
+            list.dropLast(1)
+        } else {
+            list
+        }
+
+        val tempPlaceholder = StChatMessage(
+            name = character.name,
+            isUser = false,
+            text = "",
+            isGenerating = true
+        )
+
+        _messages.value = cleanedList + tempPlaceholder
+        _isGenerating.value = true
+        _errorMessage.value = null
+
+        viewModelScope.launch {
+            val result = NativeChatApi.generateReply(
+                baseUrl = currentBaseUrl,
+                character = character,
+                history = cleanedList,
+                userMessage = userPrompt,
+                userName = userName,
+                onStatusUpdate = { _statusMessage.value = it }
+            )
+
+            result.onSuccess { replyText ->
+                val assistantMessage = StChatMessage(
+                    name = character.name,
+                    isUser = false,
+                    text = replyText,
+                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+                )
+                val finalList = cleanedList + assistantMessage
+                _messages.value = finalList
+                saveCurrentChat(messagesToSave = finalList)
+                _statusMessage.value = null
+            }.onFailure { err ->
+                _messages.value = cleanedList
+                _errorMessage.value = err.message ?: "Failed to generate reply"
+                _statusMessage.value = null
             }
 
             _isGenerating.value = false
