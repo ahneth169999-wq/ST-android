@@ -675,13 +675,13 @@ fun StNativeChatScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 if (characters.isEmpty()) {
-                    Card(
+                    Surface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 12.dp),
-                        colors = androidx.compose.material3.CardDefaults.cardColors(
-                            containerColor = Color(0xFF191B26)
-                        )
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF191B26),
+                        border = BorderStroke(1.dp, ColorCardBorder)
                     ) {
                         Column(
                             modifier = Modifier.padding(16.dp),
