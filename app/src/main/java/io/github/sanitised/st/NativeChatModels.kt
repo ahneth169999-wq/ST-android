@@ -27,7 +27,9 @@ data class StChatMessage(
     val isUser: Boolean,
     val text: String,
     val sendDate: String = "",
-    val isGenerating: Boolean = false
+    val isGenerating: Boolean = false,
+    val swipes: List<String> = emptyList(),
+    val swipeId: Int = 0
 )
 
 /**

@@ -35,6 +35,27 @@ class NativeChatViewModel : ViewModel() {
     private val _activeChatFileName = MutableStateFlow<String?>(null)
     val activeChatFileName: StateFlow<String?> = _activeChatFileName.asStateFlow()
 
+    private val _chatSessions = MutableStateFlow<List<StChatSession>>(emptyList())
+    val chatSessions: StateFlow<List<StChatSession>> = _chatSessions.asStateFlow()
+
+    private val _userName = MutableStateFlow("User")
+    val userName: StateFlow<String> = _userName.asStateFlow()
+
+    private val _userPersona = MutableStateFlow("")
+    val userPersona: StateFlow<String> = _userPersona.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _fontSizeSp = MutableStateFlow(15)
+    val fontSizeSp: StateFlow<Int> = _fontSizeSp.asStateFlow()
+
+    private val _themeAccent = MutableStateFlow("violet") // "violet", "cyan", "emerald", "amber", "crimson"
+    val themeAccent: StateFlow<String> = _themeAccent.asStateFlow()
+
+    private val _showQuickActions = MutableStateFlow(true)
+    val showQuickActions: StateFlow<Boolean> = _showQuickActions.asStateFlow()
+
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
@@ -139,6 +160,7 @@ class NativeChatViewModel : ViewModel() {
             _isLoadingMessages.value = true
             try {
                 val chats = NativeChatApi.getCharacterChats(currentBaseUrl, character.avatar)
+                _chatSessions.value = chats
                 if (chats.isNotEmpty()) {
                     val latestChat = chats.first()
                     _activeChatFileName.value = latestChat.fileName
@@ -159,6 +181,70 @@ class NativeChatViewModel : ViewModel() {
         }
     }
 
+    fun loadChatSessions() {
+        val character = _selectedCharacter.value ?: return
+        viewModelScope.launch {
+            try {
+                val sessions = NativeChatApi.getCharacterChats(currentBaseUrl, character.avatar)
+                _chatSessions.value = sessions
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun selectChatSession(session: StChatSession, onComplete: (() -> Unit)? = null) {
+        val character = _selectedCharacter.value ?: return
+        _activeChatFileName.value = session.fileName
+        _isLoadingMessages.value = true
+        viewModelScope.launch {
+            try {
+                val history = NativeChatApi.getChatMessages(currentBaseUrl, character.avatar, session.fileName)
+                _messages.value = history
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                _isLoadingMessages.value = false
+                onComplete?.invoke()
+            }
+        }
+    }
+
+    fun switchSwipe(messageIndex: Int, newSwipeId: Int) {
+        val list = _messages.value.toMutableList()
+        if (messageIndex !in list.indices) return
+        val msg = list[messageIndex]
+        if (msg.isUser || msg.swipes.isEmpty()) return
+        val clamped = newSwipeId.coerceIn(0, msg.swipes.lastIndex)
+        list[messageIndex] = msg.copy(
+            text = msg.swipes[clamped],
+            swipeId = clamped
+        )
+        _messages.value = list
+        saveCurrentChat(messagesToSave = list)
+    }
+
+    fun saveUserPersona(name: String, persona: String) {
+        _userName.value = name.trim().ifBlank { "User" }
+        _userPersona.value = persona.trim()
+    }
+
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    fun setFontSize(size: Int) {
+        _fontSizeSp.value = size.coerceIn(12, 22)
+    }
+
+    fun setThemeAccent(accent: String) {
+        _themeAccent.value = accent
+    }
+
+    fun toggleQuickActions() {
+        _showQuickActions.value = !_showQuickActions.value
+    }
+
     private fun initNewChatMessages(character: StCharacter) {
         val list = mutableListOf<StChatMessage>()
         if (character.firstMessage.isNotBlank()) {
@@ -167,7 +253,9 @@ class NativeChatViewModel : ViewModel() {
                     name = character.name,
                     isUser = false,
                     text = character.firstMessage,
-                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date()),
+                    swipes = listOf(character.firstMessage),
+                    swipeId = 0
                 )
             )
         }
@@ -175,18 +263,18 @@ class NativeChatViewModel : ViewModel() {
     }
 
     fun createNewChat(character: StCharacter? = _selectedCharacter.value): Boolean {
-        val targetChar = character ?: _characters.value.firstOrNull()
-        if (targetChar == null) return false
-
+        val targetChar = character ?: _characters.value.firstOrNull() ?: return false
         _selectedCharacter.value = targetChar
-        val newFileName = SimpleDateFormat("yyyy-MM-dd @HH'h' mm'm' ss's'", Locale.US).format(Date())
+        val timeStamp = SimpleDateFormat("yyyy-MM-dd @HH'h' mm'm' ss's'", Locale.US).format(Date())
+        val newFileName = timeStamp
         _activeChatFileName.value = newFileName
         initNewChatMessages(targetChar)
         saveCurrentChat()
+        loadChatSessions()
         return true
     }
 
-    fun sendMessage(userText: String, userName: String = "User") {
+    fun sendMessage(userText: String, userName: String = _userName.value) {
         val character = _selectedCharacter.value ?: return
         val trimmed = userText.trim()
         if (trimmed.isBlank() || _isGenerating.value) return
@@ -219,6 +307,7 @@ class NativeChatViewModel : ViewModel() {
                 history = updatedList,
                 userMessage = trimmed,
                 userName = userName,
+                userPersona = _userPersona.value,
                 onStatusUpdate = { _statusMessage.value = it }
             )
 
@@ -227,7 +316,9 @@ class NativeChatViewModel : ViewModel() {
                     name = character.name,
                     isUser = false,
                     text = replyText,
-                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date()),
+                    swipes = listOf(replyText),
+                    swipeId = 0
                 )
                 val finalList = updatedList + assistantMessage
                 _messages.value = finalList
@@ -243,18 +334,23 @@ class NativeChatViewModel : ViewModel() {
         }
     }
 
-    fun regenerateLastMessage(userName: String = "User") {
+    fun regenerateLastMessage(userName: String = _userName.value) {
         val character = _selectedCharacter.value ?: return
-        val list = _messages.value.toMutableList()
+        val list = _messages.value
         if (list.isEmpty() || _isGenerating.value) return
 
-        if (!list.last().isUser) {
-            list.removeAt(list.lastIndex)
-        }
-        if (list.isEmpty()) return
+        val lastAssistantMsg = list.lastOrNull() ?: return
+        if (lastAssistantMsg.isUser) return
 
-        val lastUserMsg = list.lastOrNull { it.isUser } ?: return
+        val listWithoutLast = list.dropLast(1)
+        val lastUserMsg = listWithoutLast.lastOrNull { it.isUser } ?: return
         val prompt = lastUserMsg.text
+
+        val currentSwipes = if (lastAssistantMsg.swipes.isNotEmpty()) {
+            lastAssistantMsg.swipes.toMutableList()
+        } else {
+            mutableListOf(lastAssistantMsg.text)
+        }
 
         val tempPlaceholder = StChatMessage(
             name = character.name,
@@ -263,7 +359,7 @@ class NativeChatViewModel : ViewModel() {
             isGenerating = true
         )
 
-        _messages.value = list + tempPlaceholder
+        _messages.value = listWithoutLast + tempPlaceholder
         _isGenerating.value = true
         _errorMessage.value = null
 
@@ -271,20 +367,25 @@ class NativeChatViewModel : ViewModel() {
             val result = NativeChatApi.generateReply(
                 baseUrl = currentBaseUrl,
                 character = character,
-                history = list,
+                history = listWithoutLast,
                 userMessage = prompt,
                 userName = userName,
+                userPersona = _userPersona.value,
                 onStatusUpdate = { _statusMessage.value = it }
             )
 
             result.onSuccess { replyText ->
-                val assistantMessage = StChatMessage(
+                currentSwipes.add(replyText)
+                val newSwipeId = currentSwipes.lastIndex
+                val assistantMessage = lastAssistantMsg.copy(
                     name = character.name,
                     isUser = false,
                     text = replyText,
+                    swipes = currentSwipes,
+                    swipeId = newSwipeId,
                     sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
                 )
-                val finalList = list + assistantMessage
+                val finalList = listWithoutLast + assistantMessage
                 _messages.value = finalList
                 saveCurrentChat(messagesToSave = finalList)
                 _statusMessage.value = null
@@ -298,7 +399,7 @@ class NativeChatViewModel : ViewModel() {
         }
     }
 
-    fun continueLastMessage(userName: String = "User") {
+    fun continueLastMessage(userName: String = _userName.value) {
         val character = _selectedCharacter.value ?: return
         val list = _messages.value
         if (list.isEmpty() || _isGenerating.value) return
@@ -325,6 +426,7 @@ class NativeChatViewModel : ViewModel() {
                 history = list,
                 userMessage = "[Continue your previous response directly from where you left off. Do not repeat what you already wrote.]",
                 userName = userName,
+                userPersona = _userPersona.value,
                 onStatusUpdate = { _statusMessage.value = it }
             )
 
@@ -334,7 +436,18 @@ class NativeChatViewModel : ViewModel() {
                 } else {
                     continuationText
                 }
-                val updatedMessage = lastAssistantMsg.copy(text = combinedText.trim())
+                val updatedSwipes = if (lastAssistantMsg.swipes.isNotEmpty()) {
+                    val sw = lastAssistantMsg.swipes.toMutableList()
+                    val idx = lastAssistantMsg.swipeId.coerceIn(0, sw.lastIndex)
+                    sw[idx] = combinedText
+                    sw
+                } else {
+                    listOf(combinedText)
+                }
+                val updatedMessage = lastAssistantMsg.copy(
+                    text = combinedText.trim(),
+                    swipes = updatedSwipes
+                )
                 val finalList = listWithoutLast + updatedMessage
                 _messages.value = finalList
                 saveCurrentChat(messagesToSave = finalList)
@@ -349,7 +462,7 @@ class NativeChatViewModel : ViewModel() {
         }
     }
 
-    fun retryLastMessage(userName: String = "User") {
+    fun retryLastMessage(userName: String = _userName.value) {
         val character = _selectedCharacter.value ?: return
         val list = _messages.value
         val lastUserMsg = list.lastOrNull { it.isUser } ?: return
@@ -380,6 +493,7 @@ class NativeChatViewModel : ViewModel() {
                 history = cleanedList,
                 userMessage = userPrompt,
                 userName = userName,
+                userPersona = _userPersona.value,
                 onStatusUpdate = { _statusMessage.value = it }
             )
 
@@ -388,7 +502,9 @@ class NativeChatViewModel : ViewModel() {
                     name = character.name,
                     isUser = false,
                     text = replyText,
-                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+                    sendDate = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date()),
+                    swipes = listOf(replyText),
+                    swipeId = 0
                 )
                 val finalList = cleanedList + assistantMessage
                 _messages.value = finalList
@@ -417,7 +533,15 @@ class NativeChatViewModel : ViewModel() {
         val list = _messages.value.toMutableList()
         if (index in list.indices) {
             val old = list[index]
-            list[index] = old.copy(text = newText)
+            val updatedSwipes = if (old.swipes.isNotEmpty()) {
+                val sw = old.swipes.toMutableList()
+                val idx = old.swipeId.coerceIn(0, sw.lastIndex)
+                sw[idx] = newText
+                sw
+            } else {
+                listOf(newText)
+            }
+            list[index] = old.copy(text = newText, swipes = updatedSwipes)
             _messages.value = list
             saveCurrentChat()
         }
@@ -431,7 +555,7 @@ class NativeChatViewModel : ViewModel() {
                 baseUrl = currentBaseUrl,
                 avatarUrl = character.avatar,
                 fileName = fileName,
-                userName = "User",
+                userName = _userName.value,
                 characterName = character.name,
                 messages = messagesToSave
             )

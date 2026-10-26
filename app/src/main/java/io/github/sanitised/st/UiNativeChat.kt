@@ -49,10 +49,15 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -61,14 +66,20 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -88,6 +99,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -103,6 +115,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -117,6 +131,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import android.speech.tts.TextToSpeech
+import android.content.Intent
+import java.util.Locale
 
 // Custom Sleek Dark Modern Palette
 private val ColorOledBackground = Color(0xFF090A0E)
@@ -131,6 +148,45 @@ private val ColorAccentViolet = Color(0xFF8B5CF6)
 private val ColorTextPrimary = Color(0xFFF8FAFC)
 private val ColorTextSecondary = Color(0xFF94A3B8)
 private val ColorRoleplayAction = Color(0xFFC4B5FD)
+
+data class ThemePalette(
+    val id: String,
+    val name: String,
+    val gradientStart: Color,
+    val gradientEnd: Color,
+    val accent: Color
+)
+
+val themePalettes = listOf(
+    ThemePalette("violet", "Cyber Violet", Color(0xFF4F46E5), Color(0xFF6366F1), Color(0xFF8B5CF6)),
+    ThemePalette("cyan", "Electric Cyan", Color(0xFF0284C7), Color(0xFF06B6D4), Color(0xFF06B6D4)),
+    ThemePalette("emerald", "Emerald Neon", Color(0xFF059669), Color(0xFF10B981), Color(0xFF10B981)),
+    ThemePalette("amber", "Amber Gold", Color(0xFFD97706), Color(0xFFF59E0B), Color(0xFFF59E0B)),
+    ThemePalette("crimson", "Crimson Red", Color(0xFFDC2626), Color(0xFFEF4444), Color(0xFFEF4444))
+)
+
+fun cleanTextForTts(text: String): String {
+    return text.replace(Regex("\\*+"), "").trim()
+}
+
+fun exportChat(context: Context, characterName: String, messages: List<StChatMessage>) {
+    val sb = StringBuilder()
+    sb.append("# Roleplay with $characterName\n\n")
+    for (m in messages) {
+        if (m.isGenerating || m.text.isBlank()) continue
+        sb.append("**${m.name}**:\n${m.text}\n\n")
+    }
+    try {
+        val sendIntent = Intent().apply {
+            action = Intent.ACTION_SEND
+            putExtra(Intent.EXTRA_TEXT, sb.toString())
+            type = "text/plain"
+        }
+        context.startActivity(Intent.createChooser(sendIntent, "Export / Share Chat"))
+    } catch (e: Exception) {
+        Toast.makeText(context, "Failed to share: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+    }
+}
 
 // Simple in-memory bitmap cache for avatars
 private val avatarBitmapCache = mutableMapOf<String, Bitmap>()
@@ -242,10 +298,46 @@ fun StNativeChatScreen(
     val errorMessage by viewModel.errorMessage.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
     val aiSettings by viewModel.aiSettings.collectAsState()
+    val chatSessions by viewModel.chatSessions.collectAsState()
+    val userName by viewModel.userName.collectAsState()
+    val userPersona by viewModel.userPersona.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
+    val fontSizeSp by viewModel.fontSizeSp.collectAsState()
+    val themeAccent by viewModel.themeAccent.collectAsState()
+    val showQuickActions by viewModel.showQuickActions.collectAsState()
+    val activeChatFileName by viewModel.activeChatFileName.collectAsState()
+
+    val activeTheme = remember(themeAccent) {
+        themePalettes.firstOrNull { it.id == themeAccent } ?: themePalettes.first()
+    }
 
     var inputPrompt by remember { mutableStateOf("") }
     var showCharacterSheet by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
+    var showSessionsSheet by remember { mutableStateOf(false) }
+    var showPersonaDialog by remember { mutableStateOf(false) }
+    var isSearchActive by remember { mutableStateOf(false) }
+    var tempPersonaName by remember(userName) { mutableStateOf(userName) }
+    var tempPersonaText by remember(userPersona) { mutableStateOf(userPersona) }
+    var speakingMessageId by remember { mutableStateOf<String?>(null) }
+    val haptic = LocalHapticFeedback.current
+
+    var tts by remember { mutableStateOf<TextToSpeech?>(null) }
+    LaunchedEffect(Unit) {
+        tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.US
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            tts?.stop()
+            tts?.shutdown()
+        }
+    }
+
     var selectedMessageForMenu by remember { mutableStateOf<Pair<Int, StChatMessage>?>(null) }
     var editingMessageIndex by remember { mutableStateOf<Int?>(null) }
     var editingMessageText by remember { mutableStateOf("") }
@@ -298,124 +390,194 @@ fun StNativeChatScreen(
             color = ColorSurfaceCard,
             tonalElevation = 4.dp
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBackToDashboard) {
-                    Icon(
-                        imageVector = Icons.Default.ArrowBack,
-                        contentDescription = "Dashboard",
-                        tint = ColorTextPrimary
-                    )
-                }
+            if (isSearchActive) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = {
+                        isSearchActive = false
+                        viewModel.setSearchQuery("")
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowBack,
+                            contentDescription = "Close Search",
+                            tint = ColorTextPrimary
+                        )
+                    }
 
-                val char = selectedCharacter
-                if (char != null) {
-                    StAvatar(
-                        avatarFileName = char.avatar,
-                        characterName = char.name,
-                        baseUrl = baseUrl,
-                        localCharacterDirs = localCharacterDirs,
-                        sizeDp = 38,
-                        modifier = Modifier.clickable { showCharacterSheet = true }
-                    )
-
-                    Spacer(modifier = Modifier.width(10.dp))
-
-                    Column(
+                    Box(
                         modifier = Modifier
                             .weight(1f)
-                            .clickable { showCharacterSheet = true }
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color(0xFF191B26))
+                            .border(1.dp, ColorCardBorder, RoundedCornerShape(20.dp))
+                            .padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
-                        Text(
-                            text = char.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = ColorTextPrimary,
-                            maxLines = 1
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isGenerating) ColorAccentCyan else Color(0xFF10B981))
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
+                        if (searchQuery.isEmpty()) {
                             Text(
-                                text = if (isGenerating) "Generating..." else "${getProviderDisplayName(aiSettings.provider)} • ${aiSettings.model.substringAfterLast('/')}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = ColorTextSecondary,
-                                fontSize = 11.sp,
-                                maxLines = 1
+                                text = "Search conversation...",
+                                color = ColorTextSecondary.copy(alpha = 0.5f),
+                                fontSize = 14.sp
+                            )
+                        }
+                        BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { viewModel.setSearchQuery(it) },
+                            textStyle = TextStyle(color = ColorTextPrimary, fontSize = 14.sp),
+                            cursorBrush = SolidColor(activeTheme.accent),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.setSearchQuery("") }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Clear",
+                                tint = ColorTextSecondary
                             )
                         }
                     }
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { showCharacterSheet = true },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Select Character",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = ColorTextSecondary
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBackToDashboard) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowBack,
+                            contentDescription = "Dashboard",
+                            tint = ColorTextPrimary
                         )
                     }
-                }
 
-                // AI Model & Key Settings Button
-                IconButton(onClick = { showSettingsSheet = true }) {
-                    Icon(
-                        imageVector = Icons.Default.Tune,
-                        contentDescription = "AI Model & Key Settings",
-                        tint = ColorAccentCyan
-                    )
-                }
+                    val char = selectedCharacter
+                    if (char != null) {
+                        StAvatar(
+                            avatarFileName = char.avatar,
+                            characterName = char.name,
+                            baseUrl = baseUrl,
+                            localCharacterDirs = localCharacterDirs,
+                            sizeDp = 38,
+                            modifier = Modifier.clickable { showCharacterSheet = true }
+                        )
 
-                // Characters Drawer Switcher
-                IconButton(onClick = { showCharacterSheet = true }) {
-                    Icon(
-                        imageVector = Icons.Default.People,
-                        contentDescription = "Switch Character",
-                        tint = ColorAccentViolet
-                    )
-                }
+                        Spacer(modifier = Modifier.width(10.dp))
 
-                // + Button: Creates New Chat if character selected; otherwise selects character or opens picker
-                IconButton(onClick = {
-                    if (selectedCharacter != null) {
-                        viewModel.createNewChat()
-                        Toast.makeText(context, "Started new chat session with ${selectedCharacter?.name}", Toast.LENGTH_SHORT).show()
-                    } else if (characters.isNotEmpty()) {
-                        val firstChar = characters.first()
-                        viewModel.selectCharacter(firstChar)
-                        Toast.makeText(context, "Selected ${firstChar.name}", Toast.LENGTH_SHORT).show()
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { showCharacterSheet = true }
+                        ) {
+                            Text(
+                                text = char.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = ColorTextPrimary,
+                                maxLines = 1
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isGenerating) activeTheme.accent else Color(0xFF10B981))
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (isGenerating) "Generating..." else "${getProviderDisplayName(aiSettings.provider)} • ${aiSettings.model.substringAfterLast('/')}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ColorTextSecondary,
+                                    fontSize = 11.sp,
+                                    maxLines = 1
+                                )
+                            }
+                        }
                     } else {
-                        showCharacterSheet = true
-                        Toast.makeText(context, "Select or import a character first", Toast.LENGTH_SHORT).show()
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { showCharacterSheet = true },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Select Character",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = ColorTextSecondary
+                            )
+                        }
                     }
-                }) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "New Chat",
-                        tint = if (selectedCharacter != null || characters.isNotEmpty()) ColorAccentCyan else ColorTextSecondary
-                    )
-                }
 
-                // 1-Tap Switch to Classic SillyTavern Web
-                IconButton(onClick = onOpenFullSillyTavern) {
-                    Icon(
-                        imageVector = Icons.Default.OpenInBrowser,
-                        contentDescription = "Open Full SillyTavern",
-                        tint = ColorTextSecondary
-                    )
+                    // Search Button
+                    IconButton(onClick = { isSearchActive = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "Search Messages",
+                            tint = ColorTextSecondary
+                        )
+                    }
+
+                    // Chat History / Sessions Switcher & New Chat Button
+                    IconButton(onClick = {
+                        viewModel.loadChatSessions()
+                        showSessionsSheet = true
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Chat,
+                            contentDescription = "Chat Sessions & History",
+                            tint = activeTheme.accent
+                        )
+                    }
+
+                    // User Persona Dialog Button
+                    IconButton(onClick = {
+                        tempPersonaName = userName
+                        tempPersonaText = userPersona
+                        showPersonaDialog = true
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Person,
+                            contentDescription = "User Persona",
+                            tint = ColorAccentCyan
+                        )
+                    }
+
+                    // AI Model & Key Settings Button
+                    IconButton(onClick = { showSettingsSheet = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = "AI Model & Key Settings",
+                            tint = ColorAccentViolet
+                        )
+                    }
+
+                    // Export / Share Chat
+                    IconButton(onClick = {
+                        exportChat(context, selectedCharacter?.name ?: "Chat", messages)
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Export / Share Chat",
+                            tint = ColorTextSecondary
+                        )
+                    }
+
+                    // 1-Tap Switch to Classic SillyTavern Web
+                    IconButton(onClick = onOpenFullSillyTavern) {
+                        Icon(
+                            imageVector = Icons.Default.OpenInBrowser,
+                            contentDescription = "Open Full SillyTavern",
+                            tint = ColorTextSecondary
+                        )
+                    }
                 }
             }
         }
@@ -599,14 +761,23 @@ fun StNativeChatScreen(
                     }
                 }
             } else {
+                val filteredMessages = remember(messages, searchQuery) {
+                    if (searchQuery.isBlank()) {
+                        messages.mapIndexed { i, m -> Pair(i, m) }
+                    } else {
+                        messages.mapIndexed { i, m -> Pair(i, m) }.filter { (_, m) ->
+                            m.text.contains(searchQuery, ignoreCase = true) || m.name.contains(searchQuery, ignoreCase = true)
+                        }
+                    }
+                }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    itemsIndexed(messages, key = { index, msg -> "${msg.id}-$index" }) { index, msg ->
-                        val isLast = (index == messages.lastIndex)
+                    itemsIndexed(filteredMessages, key = { _, (origIdx, msg) -> "${msg.id}-$origIdx" }) { _, (origIdx, msg) ->
+                        val isLast = (origIdx == messages.lastIndex)
                         MessageBubble(
                             message = msg,
                             character = selectedCharacter,
@@ -614,6 +785,32 @@ fun StNativeChatScreen(
                             localCharacterDirs = localCharacterDirs,
                             isLastMessage = isLast,
                             statusText = statusMessage,
+                            fontSizeSp = fontSizeSp,
+                            activeTheme = activeTheme,
+                            isSpeaking = (speakingMessageId == msg.id),
+                            onToggleTts = {
+                                if (speakingMessageId == msg.id) {
+                                    tts?.stop()
+                                    speakingMessageId = null
+                                } else {
+                                    tts?.stop()
+                                    val toSpeak = cleanTextForTts(msg.text)
+                                    tts?.speak(toSpeak, TextToSpeech.QUEUE_FLUSH, null, msg.id)
+                                    speakingMessageId = msg.id
+                                }
+                            },
+                            onSwipeLeft = {
+                                if (msg.swipes.size > 1 && msg.swipeId > 0) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.switchSwipe(origIdx, msg.swipeId - 1)
+                                }
+                            },
+                            onSwipeRight = {
+                                if (msg.swipes.size > 1 && msg.swipeId < msg.swipes.lastIndex) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.switchSwipe(origIdx, msg.swipeId + 1)
+                                }
+                            },
                             onContinue = { viewModel.continueLastMessage() },
                             onRegenerate = { viewModel.regenerateLastMessage() },
                             onCopy = {
@@ -621,7 +818,7 @@ fun StNativeChatScreen(
                                 clipboard.setPrimaryClip(ClipData.newPlainText("SillyTavern", msg.text))
                                 Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                             },
-                            onClick = { selectedMessageForMenu = Pair(index, msg) }
+                            onClick = { selectedMessageForMenu = Pair(origIdx, msg) }
                         )
                     }
                 }
@@ -637,6 +834,46 @@ fun StNativeChatScreen(
             tonalElevation = 6.dp
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
+                // Quick RP Action Chips
+                val quickActionsList = listOf(
+                    "*smiles*", "*sighs*", "*nods*", "*laughs*", "*chuckles*",
+                    "*whispers*", "*looks away*", "*pauses*", "*smirks*", "*frowns*",
+                    "*steps closer*", "*leans in*", "*blushes*", "*gasps*"
+                )
+                AnimatedVisibility(
+                    visible = showQuickActions && !isGenerating,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for (action in quickActionsList) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFF191B26),
+                                border = BorderStroke(1.dp, ColorCardBorder),
+                                modifier = Modifier.clickable {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    inputPrompt = if (inputPrompt.isBlank()) "$action " else "$inputPrompt $action "
+                                }
+                            ) {
+                                Text(
+                                    text = action,
+                                    color = ColorRoleplayAction,
+                                    fontSize = 11.sp,
+                                    fontStyle = FontStyle.Italic,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // Quick Action Bar: Regenerate & Continue (when last message is from assistant and not generating)
                 AnimatedVisibility(
                     visible = messages.isNotEmpty() && !messages.last().isUser && !isGenerating,
@@ -739,77 +976,93 @@ fun StNativeChatScreen(
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(Color(0xFF191B26))
-                        .border(1.dp, ColorCardBorder, RoundedCornerShape(24.dp))
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
-                ) {
-                    if (inputPrompt.isEmpty()) {
-                        Text(
-                            text = "Message ${selectedCharacter?.name ?: "character"}...",
-                            color = ColorTextSecondary.copy(alpha = 0.6f),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                    BasicTextField(
-                        value = inputPrompt,
-                        onValueChange = { inputPrompt = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        textStyle = TextStyle(
-                            color = ColorTextPrimary,
-                            fontSize = 15.sp
-                        ),
-                        cursorBrush = SolidColor(ColorAccentViolet),
-                        maxLines = 5
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (inputPrompt.isNotBlank() && !isGenerating) {
-                                Brush.horizontalGradient(
-                                    listOf(ColorUserGradientStart, ColorAccentViolet)
-                                )
-                            } else {
-                                Brush.horizontalGradient(
-                                    listOf(Color(0xFF262838), Color(0xFF262838))
-                                )
-                            }
-                        )
-                        .clickable(enabled = inputPrompt.isNotBlank() && !isGenerating) {
-                            val text = inputPrompt
-                            inputPrompt = ""
-                            viewModel.sendMessage(text)
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (isGenerating) {
-                        CircularProgressIndicator(
-                            color = ColorAccentCyan,
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
+                    // Quick Action Toggle Button
+                    IconButton(
+                        onClick = { viewModel.toggleQuickActions() },
+                        modifier = Modifier.size(36.dp)
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.Send,
-                            contentDescription = "Send",
-                            tint = if (inputPrompt.isNotBlank()) Color.White else ColorTextSecondary,
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = "Quick RP Actions",
+                            tint = if (showQuickActions) activeTheme.accent else ColorTextSecondary.copy(alpha = 0.6f),
                             modifier = Modifier.size(20.dp)
                         )
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color(0xFF191B26))
+                            .border(1.dp, ColorCardBorder, RoundedCornerShape(24.dp))
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        if (inputPrompt.isEmpty()) {
+                            Text(
+                                text = "Message ${selectedCharacter?.name ?: "character"}...",
+                                color = ColorTextSecondary.copy(alpha = 0.6f),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        BasicTextField(
+                            value = inputPrompt,
+                            onValueChange = { inputPrompt = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = TextStyle(
+                                color = ColorTextPrimary,
+                                fontSize = 15.sp
+                            ),
+                            cursorBrush = SolidColor(activeTheme.accent),
+                            maxLines = 5
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (inputPrompt.isNotBlank() && !isGenerating) {
+                                    Brush.horizontalGradient(
+                                        listOf(activeTheme.gradientStart, activeTheme.gradientEnd)
+                                    )
+                                } else {
+                                    Brush.horizontalGradient(
+                                        listOf(Color(0xFF262838), Color(0xFF262838))
+                                    )
+                                }
+                            )
+                            .clickable(enabled = inputPrompt.isNotBlank() && !isGenerating) {
+                                val text = inputPrompt
+                                inputPrompt = ""
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.sendMessage(text)
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isGenerating) {
+                            CircularProgressIndicator(
+                                color = ColorAccentCyan,
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Send,
+                                contentDescription = "Send",
+                                tint = if (inputPrompt.isNotBlank()) Color.White else ColorTextSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
         }
     }
-}
 
     // --- Character Selector Bottom Sheet ---
     if (showCharacterSheet) {
@@ -965,6 +1218,16 @@ fun StNativeChatScreen(
         ) {
             AiSettingsSheetContent(
                 aiSettings = aiSettings,
+                fontSizeSp = fontSizeSp,
+                themeAccent = themeAccent,
+                onSetFontSize = { viewModel.setFontSize(it) },
+                onSetThemeAccent = { viewModel.setThemeAccent(it) },
+                onOpenPersona = {
+                    showSettingsSheet = false
+                    tempPersonaName = userName
+                    tempPersonaText = userPersona
+                    showPersonaDialog = true
+                },
                 onSave = { updatedSettings ->
                     viewModel.saveAiSettings(updatedSettings) { success ->
                         if (success) {
@@ -984,6 +1247,243 @@ fun StNativeChatScreen(
                 onDismiss = { showSettingsSheet = false }
             )
         }
+    }
+
+    // --- Chat Sessions & History Bottom Sheet ---
+    if (showSessionsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSessionsSheet = false },
+            sheetState = rememberModalBottomSheetState(),
+            containerColor = ColorSurfaceCard
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Chat,
+                            contentDescription = null,
+                            tint = activeTheme.accent,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Chat History (${chatSessions.size})",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = ColorTextPrimary
+                        )
+                    }
+
+                    IconButton(onClick = { viewModel.loadChatSessions() }) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh Sessions",
+                            tint = ColorTextSecondary
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Start New Chat Button
+                Button(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.createNewChat {
+                            showSessionsSheet = false
+                            Toast.makeText(context, "New chat started!", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = activeTheme.accent),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Start New Chat",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                if (chatSessions.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No saved chat history found for ${selectedCharacter?.name ?: "this character"}.",
+                            color = ColorTextSecondary,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(chatSessions) { session ->
+                            val isCurrent = session.fileName == activeChatFileName ||
+                                    (activeChatFileName.isBlank() && session == chatSessions.firstOrNull())
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.selectChatSession(session.fileName)
+                                        showSessionsSheet = false
+                                        Toast.makeText(context, "Loaded chat: ${session.fileName}", Toast.LENGTH_SHORT).show()
+                                    },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isCurrent) activeTheme.accent.copy(alpha = 0.2f) else Color(0xFF191B26),
+                                border = BorderStroke(1.dp, if (isCurrent) activeTheme.accent else ColorCardBorder)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Chat,
+                                        contentDescription = null,
+                                        tint = if (isCurrent) activeTheme.accent else ColorTextSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = session.fileName.removeSuffix(".jsonl"),
+                                            color = ColorTextPrimary,
+                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                            fontSize = 14.sp,
+                                            maxLines = 1
+                                        )
+                                        if (session.lastMessage.isNotBlank()) {
+                                            Text(
+                                                text = session.lastMessage,
+                                                color = ColorTextSecondary,
+                                                fontSize = 11.sp,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                    if (isCurrent) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = activeTheme.accent
+                                        ) {
+                                            Text(
+                                                text = "ACTIVE",
+                                                color = Color.White,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- User Persona / Profile Dialog ---
+    if (showPersonaDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showPersonaDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = ColorAccentCyan,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "User Persona & Profile", color = ColorTextPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = "Customize your name and persona background. The AI will address you and adapt roleplay based on this.",
+                        color = ColorTextSecondary,
+                        fontSize = 12.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = tempPersonaName,
+                        onValueChange = { tempPersonaName = it },
+                        label = { Text("Your Display Name", fontSize = 12.sp, color = ColorTextSecondary) },
+                        placeholder = { Text("User", fontSize = 12.sp, color = ColorTextSecondary.copy(alpha = 0.5f)) },
+                        singleLine = true,
+                        textStyle = TextStyle(color = ColorTextPrimary, fontSize = 14.sp),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = tempPersonaText,
+                        onValueChange = { tempPersonaText = it },
+                        label = { Text("Persona Description / Background", fontSize = 12.sp, color = ColorTextSecondary) },
+                        placeholder = {
+                            Text(
+                                "e.g. A skilled adventurer, thoughtful traveler, student...",
+                                fontSize = 12.sp,
+                                color = ColorTextSecondary.copy(alpha = 0.5f)
+                            )
+                        },
+                        maxLines = 6,
+                        textStyle = TextStyle(color = ColorTextPrimary, fontSize = 13.sp),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.saveUserPersona(tempPersonaName, tempPersonaText)
+                        showPersonaDialog = false
+                        Toast.makeText(context, "Persona saved!", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("Save", color = activeTheme.accent, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPersonaDialog = false }) {
+                    Text("Cancel", color = ColorTextSecondary)
+                }
+            },
+            containerColor = ColorSurfaceCard
+        )
     }
 
     // --- Message Context Actions Sheet ---
@@ -1022,6 +1522,47 @@ fun StNativeChatScreen(
                     Icon(imageVector = Icons.Default.ContentCopy, contentDescription = "Copy", tint = ColorTextPrimary)
                     Spacer(modifier = Modifier.width(14.dp))
                     Text(text = "Copy Text", color = ColorTextPrimary)
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val toSpeak = cleanTextForTts(msg.text)
+                            tts?.speak(toSpeak, TextToSpeech.QUEUE_FLUSH, null, msg.id)
+                            speakingMessageId = msg.id
+                            selectedMessageForMenu = null
+                        }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(imageVector = Icons.Default.VolumeUp, contentDescription = "Read Aloud", tint = ColorAccentCyan)
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Text(text = "Read Aloud (Text to Speech)", color = ColorAccentCyan)
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            selectedMessageForMenu = null
+                            try {
+                                val sendIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(Intent.EXTRA_TEXT, msg.text)
+                                    type = "text/plain"
+                                }
+                                context.startActivity(Intent.createChooser(sendIntent, "Share Message"))
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Failed to share: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = ColorTextPrimary)
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Text(text = "Share Message", color = ColorTextPrimary)
                 }
 
                 if (!msg.isUser) {
@@ -1199,6 +1740,11 @@ fun getDefaultModelForProvider(provider: String): String = when (provider) {
 @Composable
 fun AiSettingsSheetContent(
     aiSettings: AiSettings,
+    fontSizeSp: Int = 15,
+    themeAccent: String = "violet",
+    onSetFontSize: ((Int) -> Unit)? = null,
+    onSetThemeAccent: ((String) -> Unit)? = null,
+    onOpenPersona: (() -> Unit)? = null,
     onSave: (AiSettings) -> Unit,
     onFetchModels: ((String, (List<String>) -> Unit) -> Unit)? = null,
     onSaveApiKeyDirect: ((String, String, (Boolean) -> Unit) -> Unit)? = null,
@@ -1842,6 +2388,138 @@ fun AiSettingsSheetContent(
             }
         }
 
+        // --- Appearance & Theme Accent Accordion ---
+        Spacer(modifier = Modifier.height(16.dp))
+        var showAppearance by remember { mutableStateOf(false) }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xFF191B26),
+            border = BorderStroke(1.dp, ColorCardBorder)
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showAppearance = !showAppearance },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Palette,
+                            contentDescription = null,
+                            tint = ColorAccentCyan,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Appearance & Theme Accent",
+                            fontWeight = FontWeight.SemiBold,
+                            color = ColorTextPrimary,
+                            fontSize = 14.sp
+                        )
+                    }
+                    Icon(
+                        imageVector = if (showAppearance) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = ColorTextSecondary
+                    )
+                }
+
+                if (showAppearance) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("Theme Accent Color", color = ColorTextSecondary, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        for (palette in themePalettes) {
+                            val isSelected = palette.id == themeAccent
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) palette.accent.copy(alpha = 0.25f) else Color(0xFF222433),
+                                border = BorderStroke(1.dp, if (isSelected) palette.accent else ColorCardBorder),
+                                modifier = Modifier.clickable { onSetThemeAccent?.invoke(palette.id) }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .clip(CircleShape)
+                                            .background(palette.accent)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = palette.name,
+                                        fontSize = 12.sp,
+                                        color = if (isSelected) Color.White else ColorTextSecondary,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Chat Font Size", color = ColorTextSecondary, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(
+                            13 to "Compact",
+                            15 to "Standard",
+                            17 to "Large",
+                            19 to "X-Large"
+                        ).forEach { (size, label) ->
+                            val isSelected = (fontSizeSp == size)
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { onSetFontSize?.invoke(size) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) ColorAccentViolet.copy(alpha = 0.25f) else Color(0xFF222433),
+                                border = BorderStroke(1.dp, if (isSelected) ColorAccentViolet else ColorCardBorder)
+                            ) {
+                                Box(
+                                    modifier = Modifier.padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = label,
+                                        fontSize = 11.sp,
+                                        color = if (isSelected) Color.White else ColorTextSecondary,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (onOpenPersona != null) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        OutlinedButton(
+                            onClick = onOpenPersona,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Person, contentDescription = null, tint = ColorAccentCyan)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Configure User Persona & Profile", color = ColorAccentCyan, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(24.dp))
 
         // --- Save Button ---
@@ -1883,6 +2561,12 @@ fun MessageBubble(
     localCharacterDirs: List<File> = emptyList(),
     isLastMessage: Boolean = false,
     statusText: String? = null,
+    fontSizeSp: Int = 15,
+    activeTheme: ThemePalette = themePalettes.first(),
+    isSpeaking: Boolean = false,
+    onToggleTts: (() -> Unit)? = null,
+    onSwipeLeft: (() -> Unit)? = null,
+    onSwipeRight: (() -> Unit)? = null,
     onContinue: (() -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
     onCopy: (() -> Unit)? = null,
@@ -1908,6 +2592,9 @@ fun MessageBubble(
     }
 
     val isUser = message.isUser
+    val wordCount = remember(message.text) {
+        message.text.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.size
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1942,7 +2629,7 @@ fun MessageBubble(
                 modifier = if (isUser) {
                     Modifier.background(
                         Brush.horizontalGradient(
-                            listOf(ColorUserGradientStart, ColorUserGradientEnd)
+                            listOf(activeTheme.gradientStart, activeTheme.gradientEnd)
                         )
                     )
                 } else {
@@ -1951,62 +2638,135 @@ fun MessageBubble(
             ) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                     if (!isUser) {
-                        Text(
-                            text = message.name,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = ColorAccentCyan
-                        )
-                        Spacer(modifier = Modifier.height(3.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = message.name,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = ColorAccentCyan
+                            )
+
+                            // Swipe switcher pager (< 1/3 >)
+                            if (message.swipes.size > 1) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFF191B26))
+                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { onSwipeLeft?.invoke() },
+                                        enabled = message.swipeId > 0,
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ChevronLeft,
+                                            contentDescription = "Previous Swipe",
+                                            tint = if (message.swipeId > 0) activeTheme.accent else ColorTextSecondary.copy(alpha = 0.3f),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+
+                                    Text(
+                                        text = "${message.swipeId + 1}/${message.swipes.size}",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = activeTheme.accent
+                                    )
+
+                                    IconButton(
+                                        onClick = { onSwipeRight?.invoke() },
+                                        enabled = message.swipeId < message.swipes.lastIndex,
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ChevronRight,
+                                            contentDescription = "Next Swipe",
+                                            tint = if (message.swipeId < message.swipes.lastIndex) activeTheme.accent else ColorTextSecondary.copy(alpha = 0.3f),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
                     }
-                    FormattedMessageText(text = message.text, isUser = isUser)
+
+                    FormattedMessageText(text = message.text, isUser = isUser, fontSize = fontSizeSp)
 
                     if (!isUser) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (onCopy != null) {
-                                IconButton(
-                                    onClick = onCopy,
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.ContentCopy,
-                                        contentDescription = "Copy",
-                                        tint = ColorTextSecondary.copy(alpha = 0.7f),
-                                        modifier = Modifier.size(13.dp)
-                                    )
+                            Text(
+                                text = "$wordCount words",
+                                fontSize = 10.sp,
+                                color = ColorTextSecondary.copy(alpha = 0.45f)
+                            )
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (onToggleTts != null) {
+                                    IconButton(
+                                        onClick = onToggleTts,
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isSpeaking) Icons.Default.Stop else Icons.Default.VolumeUp,
+                                            contentDescription = if (isSpeaking) "Stop Speaking" else "Read Aloud",
+                                            tint = if (isSpeaking) Color(0xFFEF4444) else ColorTextSecondary.copy(alpha = 0.7f),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
                                 }
-                            }
-                            if (isLastMessage && onContinue != null) {
-                                Spacer(modifier = Modifier.width(4.dp))
-                                IconButton(
-                                    onClick = onContinue,
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.PlayArrow,
-                                        contentDescription = "Continue",
-                                        tint = ColorAccentViolet,
-                                        modifier = Modifier.size(15.dp)
-                                    )
+                                if (onCopy != null) {
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    IconButton(
+                                        onClick = onCopy,
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCopy,
+                                            contentDescription = "Copy",
+                                            tint = ColorTextSecondary.copy(alpha = 0.7f),
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
                                 }
-                            }
-                            if (isLastMessage && onRegenerate != null) {
-                                Spacer(modifier = Modifier.width(4.dp))
-                                IconButton(
-                                    onClick = onRegenerate,
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Refresh,
-                                        contentDescription = "Regenerate",
-                                        tint = ColorAccentCyan,
-                                        modifier = Modifier.size(13.dp)
-                                    )
+                                if (isLastMessage && onContinue != null) {
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    IconButton(
+                                        onClick = onContinue,
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Continue",
+                                            tint = ColorAccentViolet,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
+                                if (isLastMessage && onRegenerate != null) {
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    IconButton(
+                                        onClick = onRegenerate,
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "Regenerate",
+                                            tint = ColorAccentCyan,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2018,7 +2778,7 @@ fun MessageBubble(
 }
 
 @Composable
-fun FormattedMessageText(text: String, isUser: Boolean) {
+fun FormattedMessageText(text: String, isUser: Boolean, fontSize: Int = 15) {
     val annotated = remember(text, isUser) {
         buildAnnotatedString {
             var inAction = false
@@ -2080,7 +2840,7 @@ fun FormattedMessageText(text: String, isUser: Boolean) {
 
     Text(
         text = annotated,
-        style = TextStyle(fontSize = 15.sp, lineHeight = 21.sp)
+        style = TextStyle(fontSize = fontSize.sp, lineHeight = (fontSize * 1.4f).sp)
     )
 }
 

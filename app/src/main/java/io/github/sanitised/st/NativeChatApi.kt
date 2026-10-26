@@ -327,12 +327,26 @@ object NativeChatApi {
                 val mes = obj.optString("mes", "")
                 val sendDate = obj.optString("send_date", "")
 
+                val swipesArr = obj.optJSONArray("swipes")
+                val swipesList = mutableListOf<String>()
+                if (swipesArr != null && swipesArr.length() > 0) {
+                    for (s in 0 until swipesArr.length()) {
+                        swipesList.add(swipesArr.optString(s, ""))
+                    }
+                } else if (mes.isNotBlank() && !isUser) {
+                    swipesList.add(mes)
+                }
+                val swipeId = obj.optInt("swipe_id", 0).coerceIn(0, (swipesList.size - 1).coerceAtLeast(0))
+                val activeText = if (swipesList.isNotEmpty() && swipeId < swipesList.size) swipesList[swipeId] else mes
+
                 list.add(
                     StChatMessage(
                         name = name,
                         isUser = isUser,
-                        text = mes,
-                        sendDate = sendDate
+                        text = activeText,
+                        sendDate = sendDate,
+                        swipes = swipesList,
+                        swipeId = swipeId
                     )
                 )
             }
@@ -377,6 +391,14 @@ object NativeChatApi {
                         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
                     })
                     put("mes", msg.text)
+                    if (!msg.isUser && msg.swipes.isNotEmpty()) {
+                        val swArr = JSONArray()
+                        for (sw in msg.swipes) {
+                            swArr.put(sw)
+                        }
+                        put("swipes", swArr)
+                        put("swipe_id", msg.swipeId)
+                    }
                     put("extra", JSONObject())
                 }
                 chatArray.put(mObj)
@@ -598,6 +620,7 @@ object NativeChatApi {
         history: List<StChatMessage>,
         userMessage: String,
         userName: String = "User",
+        userPersona: String = "",
         onStatusUpdate: ((String) -> Unit)? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
@@ -614,6 +637,9 @@ object NativeChatApi {
             }
             if (character.scenario.isNotBlank()) {
                 systemPromptParts.add("Scenario: ${character.scenario}")
+            }
+            if (userPersona.isNotBlank()) {
+                systemPromptParts.add("About $userName (User's Persona): $userPersona")
             }
             systemPromptParts.add("You are roleplaying as ${character.name}. Stay in character. Respond concisely and engagingly. User's name is $userName.")
             val systemPrompt = systemPromptParts.joinToString("\n\n")
