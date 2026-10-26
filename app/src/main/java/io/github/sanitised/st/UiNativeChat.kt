@@ -46,20 +46,35 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -224,9 +239,11 @@ fun StNativeChatScreen(
     val isLoadingMessages by viewModel.isLoadingMessages.collectAsState()
     val isLoadingCharacters by viewModel.isLoadingCharacters.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val aiSettings by viewModel.aiSettings.collectAsState()
 
     var inputPrompt by remember { mutableStateOf("") }
     var showCharacterSheet by remember { mutableStateOf(false) }
+    var showSettingsSheet by remember { mutableStateOf(false) }
     var selectedMessageForMenu by remember { mutableStateOf<Pair<Int, StChatMessage>?>(null) }
     var editingMessageIndex by remember { mutableStateOf<Int?>(null) }
     var editingMessageText by remember { mutableStateOf("") }
@@ -327,10 +344,11 @@ fun StNativeChatScreen(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = if (isGenerating) "Generating..." else "Local Engine Active",
+                                text = if (isGenerating) "Generating..." else "${aiSettings.provider.uppercase()} • ${aiSettings.model.substringAfterLast('/')}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = ColorTextSecondary,
-                                fontSize = 11.sp
+                                fontSize = 11.sp,
+                                maxLines = 1
                             )
                         }
                     }
@@ -348,6 +366,15 @@ fun StNativeChatScreen(
                             color = ColorTextSecondary
                         )
                     }
+                }
+
+                // AI Model & Key Settings Button
+                IconButton(onClick = { showSettingsSheet = true }) {
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = "AI Model & Key Settings",
+                        tint = ColorAccentCyan
+                    )
                 }
 
                 // Characters Drawer Switcher
@@ -761,6 +788,30 @@ fun StNativeChatScreen(
         }
     }
 
+    // --- AI Model & Key Settings Bottom Sheet ---
+    if (showSettingsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSettingsSheet = false },
+            sheetState = rememberModalBottomSheetState(),
+            containerColor = ColorSurfaceCard
+        ) {
+            AiSettingsSheetContent(
+                aiSettings = aiSettings,
+                onSave = { updatedSettings ->
+                    viewModel.saveAiSettings(updatedSettings) { success ->
+                        if (success) {
+                            Toast.makeText(context, "AI settings applied: ${updatedSettings.model.substringAfterLast('/')}", Toast.LENGTH_SHORT).show()
+                            showSettingsSheet = false
+                        } else {
+                            Toast.makeText(context, "Failed to save settings to SillyTavern", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onDismiss = { showSettingsSheet = false }
+            )
+        }
+    }
+
     // --- Message Context Actions Sheet ---
     selectedMessageForMenu?.let { (idx, msg) ->
         ModalBottomSheet(
@@ -881,6 +932,417 @@ fun StNativeChatScreen(
             containerColor = ColorSurfaceCard
         )
     }
+}
+
+@Composable
+fun AiSettingsSheetContent(
+    aiSettings: AiSettings,
+    onSave: (AiSettings) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedProvider by remember(aiSettings) { mutableStateOf(aiSettings.provider) }
+    var modelInput by remember(aiSettings, selectedProvider) {
+        mutableStateOf(
+            if (selectedProvider == aiSettings.provider) aiSettings.model
+            else getDefaultModelForProvider(selectedProvider)
+        )
+    }
+    var apiKeyInput by remember { mutableStateOf("") }
+    var showApiKey by remember { mutableStateOf(false) }
+    var customUrlInput by remember(aiSettings) { mutableStateOf(aiSettings.customUrl) }
+    var tempValue by remember(aiSettings) { mutableStateOf(aiSettings.temperature.toFloat()) }
+    var maxTokensValue by remember(aiSettings) { mutableStateOf(aiSettings.maxTokens.toFloat()) }
+    var showAdvanced by remember { mutableStateOf(false) }
+
+    val providers = listOf(
+        "openrouter" to "🌐 OpenRouter",
+        "openai" to "🤖 OpenAI",
+        "claude" to "🎭 Claude",
+        "makersuite" to "✨ Gemini",
+        "deepseek" to "⚡ DeepSeek",
+        "groq" to "🚀 Groq",
+        "custom" to "⚙️ Custom URL"
+    )
+
+    val presetModels = when (selectedProvider) {
+        "openrouter" -> listOf(
+            "anthropic/claude-3.5-sonnet",
+            "deepseek/deepseek-chat",
+            "meta-llama/llama-3.3-70b-instruct",
+            "google/gemini-2.0-flash-exp:free",
+            "openai/gpt-4o-mini",
+            "gryphe/mythomax-l2-13b"
+        )
+        "openai" -> listOf("gpt-4o", "gpt-4o-mini", "o1-mini", "gpt-4-turbo")
+        "claude" -> listOf("claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229")
+        "makersuite" -> listOf("gemini-1.5-pro-latest", "gemini-1.5-flash-latest", "gemini-2.0-flash-exp")
+        "deepseek" -> listOf("deepseek-chat", "deepseek-reasoner")
+        "groq" -> listOf("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it")
+        else -> listOf("gpt-4o", "anthropic/claude-3.5-sonnet")
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 36.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        // --- Header ---
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Tune,
+                    contentDescription = null,
+                    tint = ColorAccentCyan,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "AI Model & Key Settings",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = ColorTextPrimary
+                )
+            }
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close",
+                    tint = ColorTextSecondary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // --- Current Status Badge ---
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xFF191B26),
+            border = BorderStroke(1.dp, ColorCardBorder)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "ACTIVE ENGINE",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ColorTextSecondary
+                    )
+                    Text(
+                        text = "${selectedProvider.uppercase()} • ${modelInput.substringAfterLast('/')}",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = ColorAccentCyan
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (aiSettings.hasExistingKey) Color(0xFF064E3B) else Color(0xFF78350F)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(if (aiSettings.hasExistingKey) Color(0xFF10B981) else Color(0xFFF59E0B))
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = if (aiSettings.hasExistingKey) "Key Active" else "No Key",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (aiSettings.hasExistingKey) Color(0xFFA7F3D0) else Color(0xFFFDE68A)
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // --- Provider Selection ---
+        Text(
+            text = "AI PROVIDER",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = ColorTextSecondary
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            for ((id, label) in providers) {
+                val isSelected = selectedProvider == id
+                Surface(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable {
+                            selectedProvider = id
+                            modelInput = getDefaultModelForProvider(id)
+                        },
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (isSelected) ColorAccentViolet.copy(alpha = 0.25f) else Color(0xFF191B26),
+                    border = BorderStroke(
+                        1.dp,
+                        if (isSelected) ColorAccentViolet else ColorCardBorder
+                    )
+                ) {
+                    Text(
+                        text = label,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isSelected) ColorTextPrimary else ColorTextSecondary
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // --- Model Presets ---
+        Text(
+            text = "QUICK MODEL PRESETS",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = ColorTextSecondary
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            for (preset in presetModels) {
+                val isSelected = modelInput == preset
+                Surface(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable { modelInput = preset },
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (isSelected) ColorAccentCyan.copy(alpha = 0.2f) else Color(0xFF191B26),
+                    border = BorderStroke(
+                        1.dp,
+                        if (isSelected) ColorAccentCyan else ColorCardBorder
+                    )
+                ) {
+                    Text(
+                        text = preset.substringAfterLast('/'),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        fontSize = 12.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isSelected) ColorAccentCyan else ColorTextSecondary
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // --- Custom Model ID Input ---
+        OutlinedTextField(
+            value = modelInput,
+            onValueChange = { modelInput = it },
+            label = { Text("Model ID / Name", color = ColorTextSecondary) },
+            singleLine = true,
+            textStyle = TextStyle(color = ColorTextPrimary, fontSize = 14.sp),
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- API Key Input ---
+        OutlinedTextField(
+            value = apiKeyInput,
+            onValueChange = { apiKeyInput = it },
+            label = {
+                Text(
+                    text = if (aiSettings.hasExistingKey) "Change API Key (Leave blank to keep active)" else "Enter API Key",
+                    color = ColorTextSecondary
+                )
+            },
+            placeholder = {
+                Text(
+                    text = if (aiSettings.hasExistingKey) "•••••••••••••••• (Active)" else "Paste API Key (sk-...)",
+                    color = ColorTextSecondary.copy(alpha = 0.5f)
+                )
+            },
+            singleLine = true,
+            textStyle = TextStyle(color = ColorTextPrimary, fontSize = 14.sp),
+            visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = {
+                IconButton(onClick = { showApiKey = !showApiKey }) {
+                    Icon(
+                        imageVector = if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        contentDescription = "Toggle key visibility",
+                        tint = ColorTextSecondary
+                    )
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        )
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // --- Advanced Parameters Accordion ---
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .clickable { showAdvanced = !showAdvanced },
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xFF191B26),
+            border = BorderStroke(1.dp, ColorCardBorder)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Advanced Parameters (Temperature, Tokens, Proxy)",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = ColorTextPrimary
+                )
+                Icon(
+                    imageVector = if (showAdvanced) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = ColorTextSecondary
+                )
+            }
+        }
+
+        if (showAdvanced) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFF141520),
+                border = BorderStroke(1.dp, ColorCardBorder)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    // Temperature
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Temperature", fontSize = 12.sp, color = ColorTextSecondary)
+                        Text(String.format(java.util.Locale.US, "%.2f", tempValue), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ColorAccentCyan)
+                    }
+                    Slider(
+                        value = tempValue,
+                        onValueChange = { tempValue = it },
+                        valueRange = 0.0f..2.0f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = ColorAccentCyan,
+                            activeTrackColor = ColorAccentCyan
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Max Tokens
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Max Output Tokens", fontSize = 12.sp, color = ColorTextSecondary)
+                        Text("${maxTokensValue.toInt()}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ColorAccentViolet)
+                    }
+                    Slider(
+                        value = maxTokensValue,
+                        onValueChange = { maxTokensValue = it },
+                        valueRange = 100f..4000f,
+                        steps = 38,
+                        colors = SliderDefaults.colors(
+                            thumbColor = ColorAccentViolet,
+                            activeTrackColor = ColorAccentViolet
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Custom URL / Reverse Proxy
+                    OutlinedTextField(
+                        value = customUrlInput,
+                        onValueChange = { customUrlInput = it },
+                        label = { Text("Custom Reverse Proxy / URL (Optional)", fontSize = 12.sp, color = ColorTextSecondary) },
+                        placeholder = { Text("https://...", fontSize = 12.sp, color = ColorTextSecondary.copy(alpha = 0.4f)) },
+                        singleLine = true,
+                        textStyle = TextStyle(color = ColorTextPrimary, fontSize = 13.sp),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // --- Save Button ---
+        Button(
+            onClick = {
+                onSave(
+                    aiSettings.copy(
+                        provider = selectedProvider,
+                        model = modelInput.trim().ifBlank { getDefaultModelForProvider(selectedProvider) },
+                        apiKey = apiKeyInput.trim(),
+                        customUrl = customUrlInput.trim(),
+                        temperature = tempValue.toDouble(),
+                        maxTokens = maxTokensValue.toInt()
+                    )
+                )
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = Color.White)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Save & Apply Settings",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = Color.White
+            )
+        }
+    }
+}
+
+private fun getDefaultModelForProvider(provider: String): String = when (provider) {
+    "openrouter" -> "anthropic/claude-3.5-sonnet"
+    "claude" -> "claude-3-5-sonnet-20241022"
+    "makersuite" -> "gemini-1.5-pro-latest"
+    "deepseek" -> "deepseek-chat"
+    "groq" -> "llama-3.3-70b-versatile"
+    else -> "gpt-4o"
 }
 
 @Composable

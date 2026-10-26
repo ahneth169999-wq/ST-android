@@ -399,6 +399,143 @@ object NativeChatApi {
     }
 
     /**
+     * Fetch secret keys state from SillyTavern.
+     */
+    suspend fun getSecretState(baseUrl: String): JSONObject? = withContext(Dispatchers.IO) {
+        try {
+            val responseText = postJson("$baseUrl/api/secrets/read", "{}")
+            JSONObject(responseText)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Store an API key into SillyTavern secrets.
+     */
+    suspend fun writeSecret(baseUrl: String, secretKey: String, value: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val req = JSONObject().apply {
+                put("key", secretKey)
+                put("value", value.trim())
+                put("label", "NativeChat")
+            }
+            postJson("$baseUrl/api/secrets/write", req.toString())
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    /**
+     * Save settings to SillyTavern settings.json.
+     */
+    suspend fun saveSettings(baseUrl: String, settingsObj: JSONObject): Boolean = withContext(Dispatchers.IO) {
+        try {
+            postJson("$baseUrl/api/settings/save", settingsObj.toString())
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    /**
+     * Load current AI provider, model, key status, and params.
+     */
+    suspend fun getAiSettings(baseUrl: String): AiSettings = withContext(Dispatchers.IO) {
+        val settings = getSettings(baseUrl) ?: JSONObject()
+        val secretsState = getSecretState(baseUrl)
+
+        val provider = settings.optString("main_api", "openrouter").ifBlank { "openrouter" }
+        val modelKey = "model_$provider"
+        val model = settings.optString(modelKey, "").ifBlank {
+            settings.optString("model", "").ifBlank {
+                when (provider) {
+                    "openrouter" -> "anthropic/claude-3.5-sonnet"
+                    "claude" -> "claude-3-5-sonnet-20241022"
+                    "makersuite" -> "gemini-1.5-pro-latest"
+                    "deepseek" -> "deepseek-chat"
+                    "groq" -> "llama-3.3-70b-versatile"
+                    else -> "gpt-4o"
+                }
+            }
+        }
+
+        val secretKeyName = when (provider) {
+            "openrouter" -> "api_key_openrouter"
+            "openai" -> "api_key_openai"
+            "claude" -> "api_key_claude"
+            "makersuite" -> "api_key_makersuite"
+            "deepseek" -> "api_key_deepseek"
+            "groq" -> "api_key_groq"
+            "custom" -> "api_key_custom"
+            else -> "api_key_$provider"
+        }
+
+        var hasKey = false
+        val secretArr = secretsState?.optJSONArray(secretKeyName)
+        if (secretArr != null && secretArr.length() > 0) {
+            hasKey = true
+        }
+
+        val customUrl = settings.optString("reverse_proxy", "")
+        val temp = settings.optDouble("temperature", 0.9)
+        val maxTokens = settings.optInt("max_length", 800)
+
+        AiSettings(
+            provider = provider,
+            model = model,
+            apiKey = "",
+            hasExistingKey = hasKey,
+            customUrl = customUrl,
+            temperature = temp,
+            maxTokens = maxTokens
+        )
+    }
+
+    /**
+     * Save AI provider, model, key, and params.
+     */
+    suspend fun saveAiSettings(baseUrl: String, aiSettings: AiSettings): Boolean = withContext(Dispatchers.IO) {
+        try {
+            // 1. If user entered a new key, save to secrets
+            if (aiSettings.apiKey.isNotBlank()) {
+                val secretKeyName = when (aiSettings.provider) {
+                    "openrouter" -> "api_key_openrouter"
+                    "openai" -> "api_key_openai"
+                    "claude" -> "api_key_claude"
+                    "makersuite" -> "api_key_makersuite"
+                    "deepseek" -> "api_key_deepseek"
+                    "groq" -> "api_key_groq"
+                    "custom" -> "api_key_custom"
+                    else -> "api_key_${aiSettings.provider}"
+                }
+                writeSecret(baseUrl, secretKeyName, aiSettings.apiKey.trim())
+            }
+
+            // 2. Update settings.json
+            val currentSettings = getSettings(baseUrl) ?: JSONObject()
+            currentSettings.put("main_api", aiSettings.provider)
+            currentSettings.put("model_${aiSettings.provider}", aiSettings.model.trim())
+            currentSettings.put("model", aiSettings.model.trim())
+            currentSettings.put("temperature", aiSettings.temperature)
+            currentSettings.put("max_length", aiSettings.maxTokens)
+            if (aiSettings.customUrl.isNotBlank()) {
+                currentSettings.put("reverse_proxy", aiSettings.customUrl.trim())
+                currentSettings.put("custom_api_url", aiSettings.customUrl.trim())
+            }
+
+            saveSettings(baseUrl, currentSettings)
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    /**
      * Send generation request to SillyTavern's active completion backend.
      */
     suspend fun generateReply(
@@ -410,7 +547,7 @@ object NativeChatApi {
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val settings = getSettings(baseUrl)
-            val mainApi = settings?.optString("main_api", "openai") ?: "openai"
+            val mainApi = settings?.optString("main_api", "openrouter") ?: "openrouter"
 
             // Construct System Prompt
             val systemPromptParts = mutableListOf<String>()
@@ -446,11 +583,17 @@ object NativeChatApi {
                 put("content", userMessage)
             })
 
-            val model = when (mainApi) {
-                "openrouter" -> settings?.optString("model_openrouter", "anthropic/claude-3.5-sonnet") ?: "anthropic/claude-3.5-sonnet"
-                "claude" -> settings?.optString("model_claude", "claude-3-5-sonnet-20241022") ?: "claude-3-5-sonnet-20241022"
-                else -> settings?.optString("model_openai", "gpt-4o") ?: "gpt-4o"
-            }
+            val modelKey = "model_$mainApi"
+            val model = settings?.optString(modelKey, "").takeIf { !it.isNullOrBlank() }
+                ?: settings?.optString("model", "").takeIf { !it.isNullOrBlank() }
+                ?: when (mainApi) {
+                    "openrouter" -> "anthropic/claude-3.5-sonnet"
+                    "claude" -> "claude-3-5-sonnet-20241022"
+                    "makersuite" -> "gemini-1.5-pro-latest"
+                    "deepseek" -> "deepseek-chat"
+                    "groq" -> "llama-3.3-70b-versatile"
+                    else -> "gpt-4o"
+                }
             val temp = settings?.optDouble("temperature", 0.9) ?: 0.9
             val maxTokens = settings?.optInt("max_length", 800) ?: 800
 
@@ -461,6 +604,10 @@ object NativeChatApi {
                 put("temperature", temp)
                 put("max_tokens", maxTokens)
                 put("stream", false)
+                val revProxy = settings?.optString("reverse_proxy", "")
+                if (!revProxy.isNullOrBlank()) {
+                    put("reverse_proxy", revProxy)
+                }
             }
 
             val responseText = postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)

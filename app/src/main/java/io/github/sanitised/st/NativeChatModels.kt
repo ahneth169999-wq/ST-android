@@ -39,3 +39,16 @@ data class StChatSession(
     val previewText: String = "",
     val lastDate: String = ""
 )
+
+/**
+ * Represents the AI engine, model, and key configuration for SillyTavern.
+ */
+data class AiSettings(
+    val provider: String = "openrouter",
+    val model: String = "anthropic/claude-3.5-sonnet",
+    val apiKey: String = "",
+    val hasExistingKey: Boolean = false,
+    val customUrl: String = "",
+    val temperature: Double = 0.9,
+    val maxTokens: Int = 800
+)

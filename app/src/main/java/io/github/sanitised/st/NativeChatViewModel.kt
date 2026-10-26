@@ -38,12 +38,39 @@ class NativeChatViewModel : ViewModel() {
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private val _aiSettings = MutableStateFlow(AiSettings())
+    val aiSettings: StateFlow<AiSettings> = _aiSettings.asStateFlow()
+
     private var currentBaseUrl: String = "http://127.0.0.1:8000"
     private var localCharacterDirs: List<File> = emptyList()
 
     fun setConfig(baseUrl: String, localDirs: List<File>) {
         currentBaseUrl = baseUrl.trimEnd('/')
         localCharacterDirs = localDirs
+        loadAiSettings()
+    }
+
+    fun loadAiSettings() {
+        viewModelScope.launch {
+            try {
+                _aiSettings.value = NativeChatApi.getAiSettings(currentBaseUrl)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun saveAiSettings(newSettings: AiSettings, onComplete: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val success = NativeChatApi.saveAiSettings(currentBaseUrl, newSettings)
+            if (success) {
+                _aiSettings.value = newSettings.copy(
+                    apiKey = "",
+                    hasExistingKey = newSettings.apiKey.isNotBlank() || newSettings.hasExistingKey
+                )
+            }
+            onComplete(success)
+        }
     }
 
     fun loadCharacters(initialAvatar: String? = null) {
@@ -73,6 +100,7 @@ class NativeChatViewModel : ViewModel() {
                 _isLoadingCharacters.value = false
             }
         }
+        loadAiSettings()
     }
 
     fun selectCharacter(character: StCharacter) {
