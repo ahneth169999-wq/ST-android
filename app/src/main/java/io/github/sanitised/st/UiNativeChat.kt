@@ -344,7 +344,7 @@ fun StNativeChatScreen(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = if (isGenerating) "Generating..." else "${aiSettings.provider.uppercase()} • ${aiSettings.model.substringAfterLast('/')}",
+                                text = if (isGenerating) "Generating..." else "${getProviderDisplayName(aiSettings.provider)} • ${aiSettings.model.substringAfterLast('/')}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = ColorTextSecondary,
                                 fontSize = 11.sp,
@@ -807,6 +807,12 @@ fun StNativeChatScreen(
                         }
                     }
                 },
+                onFetchModels = { source, callback ->
+                    viewModel.fetchAvailableModels(source, callback)
+                },
+                onSaveApiKeyDirect = { provider, key, callback ->
+                    viewModel.saveApiKeyDirect(provider, key, callback)
+                },
                 onDismiss = { showSettingsSheet = false }
             )
         }
@@ -934,10 +940,69 @@ fun StNativeChatScreen(
     }
 }
 
+data class GeminiModelPreset(
+    val id: String,
+    val displayName: String,
+    val category: String, // "2.0", "2.5", "1.5", "Gemma"
+    val badge: String? = null
+)
+
+private val allGeminiPresets = listOf(
+    // Gemini 2.0 (Flagship & Recommended)
+    GeminiModelPreset("gemini-2.0-flash", "Gemini 2.0 Flash", "2.0", "⚡ Recommended"),
+    GeminiModelPreset("gemini-2.0-flash-exp", "Gemini 2.0 Flash Exp", "2.0", "Experimental"),
+    GeminiModelPreset("gemini-2.0-flash-thinking-exp-01-21", "Gemini 2.0 Flash Thinking", "2.0", "🧠 Thinking"),
+    GeminiModelPreset("gemini-2.0-flash-lite", "Gemini 2.0 Flash Lite", "2.0", "🚀 Fast Lite"),
+    GeminiModelPreset("gemini-2.0-flash-lite-preview-02-05", "Gemini 2.0 Flash Lite Preview", "2.0", "Preview"),
+    GeminiModelPreset("gemini-2.0-pro-exp-02-05", "Gemini 2.0 Pro Exp", "2.0", "💎 Pro Exp"),
+    // Gemini 2.5 (Next-Gen Preview)
+    GeminiModelPreset("gemini-2.5-pro", "Gemini 2.5 Pro", "2.5", "🌟 Preview"),
+    GeminiModelPreset("gemini-2.5-flash", "Gemini 2.5 Flash", "2.5", "⚡ Fast"),
+    // Gemini 1.5 Pro
+    GeminiModelPreset("gemini-1.5-pro-latest", "Gemini 1.5 Pro Latest", "1.5", "📚 2M Context"),
+    GeminiModelPreset("gemini-1.5-pro-002", "Gemini 1.5 Pro 002", "1.5", "Stable"),
+    GeminiModelPreset("gemini-1.5-pro-001", "Gemini 1.5 Pro 001", "1.5", null),
+    GeminiModelPreset("gemini-1.5-pro", "Gemini 1.5 Pro", "1.5", "Standard"),
+    // Gemini 1.5 Flash
+    GeminiModelPreset("gemini-1.5-flash-latest", "Gemini 1.5 Flash Latest", "1.5", "⚡ Fast"),
+    GeminiModelPreset("gemini-1.5-flash-002", "Gemini 1.5 Flash 002", "1.5", "Stable"),
+    GeminiModelPreset("gemini-1.5-flash-001", "Gemini 1.5 Flash 001", "1.5", null),
+    GeminiModelPreset("gemini-1.5-flash", "Gemini 1.5 Flash", "1.5", "Standard"),
+    GeminiModelPreset("gemini-1.5-flash-8b", "Gemini 1.5 Flash 8B", "1.5", "🏎️ 8B Fast"),
+    GeminiModelPreset("gemini-1.5-flash-8b-latest", "Gemini 1.5 Flash 8B Latest", "1.5", "8B Latest"),
+    // Gemma Open Models on AI Studio
+    GeminiModelPreset("gemma-2-27b-it", "Gemma 2 27B IT", "Gemma", "Open Model"),
+    GeminiModelPreset("gemma-2-9b-it", "Gemma 2 9B IT", "Gemma", "Open Model"),
+    // Legacy
+    GeminiModelPreset("gemini-1.0-pro", "Gemini 1.0 Pro", "1.5", "Legacy")
+)
+
+fun getProviderDisplayName(provider: String): String = when (provider.lowercase()) {
+    "makersuite" -> "Google Gemini"
+    "openrouter" -> "OpenRouter"
+    "openai" -> "OpenAI"
+    "claude" -> "Claude"
+    "deepseek" -> "DeepSeek"
+    "groq" -> "Groq"
+    "custom" -> "Custom"
+    else -> provider.replaceFirstChar { it.uppercase() }
+}
+
+fun getDefaultModelForProvider(provider: String): String = when (provider) {
+    "makersuite" -> "gemini-2.0-flash"
+    "openrouter" -> "anthropic/claude-3.5-sonnet"
+    "claude" -> "claude-3-5-sonnet-20241022"
+    "deepseek" -> "deepseek-chat"
+    "groq" -> "llama-3.3-70b-versatile"
+    else -> "gpt-4o"
+}
+
 @Composable
 fun AiSettingsSheetContent(
     aiSettings: AiSettings,
     onSave: (AiSettings) -> Unit,
+    onFetchModels: ((String, (List<String>) -> Unit) -> Unit)? = null,
+    onSaveApiKeyDirect: ((String, String, (Boolean) -> Unit) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     var selectedProvider by remember(aiSettings) { mutableStateOf(aiSettings.provider) }
@@ -954,17 +1019,23 @@ fun AiSettingsSheetContent(
     var maxTokensValue by remember(aiSettings) { mutableStateOf(aiSettings.maxTokens.toFloat()) }
     var showAdvanced by remember { mutableStateOf(false) }
 
+    // Gemini category filter state
+    var selectedGeminiCategory by remember { mutableStateOf("All") } // "All", "2.0", "2.5", "1.5", "Gemma"
+    var isFetchingLiveModels by remember { mutableStateOf(false) }
+    var liveModelsList by remember { mutableStateOf<List<String>>(emptyList()) }
+    var fetchStatusMessage by remember { mutableStateOf<String?>(null) }
+
     val providers = listOf(
+        "makersuite" to "✨ Google AI Studio (Gemini)",
         "openrouter" to "🌐 OpenRouter",
         "openai" to "🤖 OpenAI",
         "claude" to "🎭 Claude",
-        "makersuite" to "✨ Gemini",
         "deepseek" to "⚡ DeepSeek",
         "groq" to "🚀 Groq",
         "custom" to "⚙️ Custom URL"
     )
 
-    val presetModels = when (selectedProvider) {
+    val standardPresets = when (selectedProvider) {
         "openrouter" -> listOf(
             "anthropic/claude-3.5-sonnet",
             "deepseek/deepseek-chat",
@@ -975,7 +1046,6 @@ fun AiSettingsSheetContent(
         )
         "openai" -> listOf("gpt-4o", "gpt-4o-mini", "o1-mini", "gpt-4-turbo")
         "claude" -> listOf("claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229")
-        "makersuite" -> listOf("gemini-1.5-pro-latest", "gemini-1.5-flash-latest", "gemini-2.0-flash-exp")
         "deepseek" -> listOf("deepseek-chat", "deepseek-reasoner")
         "groq" -> listOf("llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it")
         else -> listOf("gpt-4o", "anthropic/claude-3.5-sonnet")
@@ -1042,7 +1112,7 @@ fun AiSettingsSheetContent(
                         color = ColorTextSecondary
                     )
                     Text(
-                        text = "${selectedProvider.uppercase()} • ${modelInput.substringAfterLast('/')}",
+                        text = "${getProviderDisplayName(selectedProvider).uppercase()} • ${modelInput.substringAfterLast('/')}",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
                         color = ColorAccentCyan
@@ -1099,6 +1169,8 @@ fun AiSettingsSheetContent(
                         .clickable {
                             selectedProvider = id
                             modelInput = getDefaultModelForProvider(id)
+                            liveModelsList = emptyList()
+                            fetchStatusMessage = null
                         },
                     shape = RoundedCornerShape(20.dp),
                     color = if (isSelected) ColorAccentViolet.copy(alpha = 0.25f) else Color(0xFF191B26),
@@ -1120,40 +1192,248 @@ fun AiSettingsSheetContent(
 
         Spacer(modifier = Modifier.height(18.dp))
 
-        // --- Model Presets ---
-        Text(
-            text = "QUICK MODEL PRESETS",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = ColorTextSecondary
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            for (preset in presetModels) {
-                val isSelected = modelInput == preset
+        // --- Model Selection Section ---
+        if (selectedProvider == "makersuite") {
+            // GOOGLE GEMINI SPECIALIZED SECTION
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "GOOGLE AI STUDIO MODELS",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ColorTextSecondary
+                    )
+                    Text(
+                        text = "Tap a model to select it",
+                        fontSize = 11.sp,
+                        color = ColorTextSecondary.copy(alpha = 0.7f)
+                    )
+                }
+
+                // Live Fetch Button
                 Surface(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .clickable { modelInput = preset },
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (isSelected) ColorAccentCyan.copy(alpha = 0.2f) else Color(0xFF191B26),
-                    border = BorderStroke(
-                        1.dp,
-                        if (isSelected) ColorAccentCyan else ColorCardBorder
-                    )
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable(enabled = !isFetchingLiveModels) {
+                            if (onFetchModels != null) {
+                                isFetchingLiveModels = true
+                                fetchStatusMessage = "Fetching models from Google AI Studio..."
+
+                                // If user typed a new key in the box, save it first so backend has it
+                                val doFetch = {
+                                    onFetchModels("makersuite") { models ->
+                                        isFetchingLiveModels = false
+                                        if (models.isNotEmpty()) {
+                                            liveModelsList = models
+                                            fetchStatusMessage = "✓ Synchronized ${models.size} models from Google!"
+                                        } else {
+                                            fetchStatusMessage = "Could not fetch models. Verify your API key."
+                                        }
+                                    }
+                                }
+
+                                if (apiKeyInput.isNotBlank() && onSaveApiKeyDirect != null) {
+                                    onSaveApiKeyDirect("makersuite", apiKeyInput) { _ ->
+                                        doFetch()
+                                    }
+                                } else {
+                                    doFetch()
+                                }
+                            }
+                        },
+                    shape = RoundedCornerShape(14.dp),
+                    color = ColorAccentCyan.copy(alpha = 0.15f),
+                    border = BorderStroke(1.dp, ColorAccentCyan.copy(alpha = 0.5f))
                 ) {
-                    Text(
-                        text = preset.substringAfterLast('/'),
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        fontSize = 12.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isSelected) ColorAccentCyan else ColorTextSecondary
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isFetchingLiveModels) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 2.dp,
+                                color = ColorAccentCyan
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = ColorAccentCyan,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = if (isFetchingLiveModels) "Syncing..." else "Fetch Live",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = ColorAccentCyan
+                        )
+                    }
+                }
+            }
+
+            if (!fetchStatusMessage.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = fetchStatusMessage.orEmpty(),
+                    fontSize = 11.sp,
+                    color = if (fetchStatusMessage?.startsWith("✓") == true) Color(0xFFA7F3D0) else Color(0xFFFCA5A5)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Gemini Category Filter Pills
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                val categories = listOf("All", "2.0", "2.5", "1.5", "Gemma")
+                for (cat in categories) {
+                    val isCatSelected = selectedGeminiCategory == cat
+                    val catLabel = when (cat) {
+                        "All" -> "All Models (${allGeminiPresets.size})"
+                        "2.0" -> "Gemini 2.0"
+                        "2.5" -> "Gemini 2.5"
+                        "1.5" -> "Gemini 1.5"
+                        "Gemma" -> "Gemma 2"
+                        else -> cat
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { selectedGeminiCategory = cat },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isCatSelected) ColorAccentViolet else Color(0xFF191B26),
+                        border = BorderStroke(1.dp, if (isCatSelected) ColorAccentViolet else ColorCardBorder)
+                    ) {
+                        Text(
+                            text = catLabel,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            fontSize = 11.sp,
+                            fontWeight = if (isCatSelected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isCatSelected) Color.White else ColorTextSecondary
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Gemini Model Presets Chips
+            val filteredGemini = remember(selectedGeminiCategory, liveModelsList) {
+                val presets = if (selectedGeminiCategory == "All") {
+                    allGeminiPresets
+                } else {
+                    allGeminiPresets.filter { it.category == selectedGeminiCategory }
+                }
+
+                // Append any extra models discovered via Live Fetch
+                val extras = liveModelsList
+                    .filter { id -> allGeminiPresets.none { it.id == id } }
+                    .map { id -> GeminiModelPreset(id, id, "Live", "Live") }
+
+                if (selectedGeminiCategory == "All") presets + extras else presets
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (preset in filteredGemini) {
+                    val isSelected = modelInput == preset.id
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { modelInput = preset.id },
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isSelected) ColorAccentCyan.copy(alpha = 0.22f) else Color(0xFF191B26),
+                        border = BorderStroke(
+                            1.5.dp,
+                            if (isSelected) ColorAccentCyan else ColorCardBorder
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = preset.displayName,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) ColorAccentCyan else ColorTextPrimary
+                                )
+                                if (preset.badge != null) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (preset.badge.contains("Recommended")) Color(0xFF065F46) else Color(0xFF312E81)
+                                    ) {
+                                        Text(
+                                            text = preset.badge,
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (preset.badge.contains("Recommended")) Color(0xFFA7F3D0) else Color(0xFFDDD6FE)
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                text = preset.id,
+                                fontSize = 10.sp,
+                                color = ColorTextSecondary.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            // STANDARD PROVIDER MODEL PRESETS
+            Text(
+                text = "QUICK MODEL PRESETS",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = ColorTextSecondary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                for (preset in standardPresets) {
+                    val isSelected = modelInput == preset
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable { modelInput = preset },
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isSelected) ColorAccentCyan.copy(alpha = 0.2f) else Color(0xFF191B26),
+                        border = BorderStroke(
+                            1.dp,
+                            if (isSelected) ColorAccentCyan else ColorCardBorder
+                        )
+                    ) {
+                        Text(
+                            text = preset.substringAfterLast('/'),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isSelected) ColorAccentCyan else ColorTextSecondary
+                        )
+                    }
                 }
             }
         }
@@ -1179,13 +1459,23 @@ fun AiSettingsSheetContent(
             onValueChange = { apiKeyInput = it },
             label = {
                 Text(
-                    text = if (aiSettings.hasExistingKey) "Change API Key (Leave blank to keep active)" else "Enter API Key",
+                    text = if (selectedProvider == "makersuite") {
+                        if (aiSettings.hasExistingKey) "Change Google AI Studio Key (Leave blank to keep active)"
+                        else "Google AI Studio API Key"
+                    } else {
+                        if (aiSettings.hasExistingKey) "Change API Key (Leave blank to keep active)"
+                        else "Enter API Key"
+                    },
                     color = ColorTextSecondary
                 )
             },
             placeholder = {
                 Text(
-                    text = if (aiSettings.hasExistingKey) "•••••••••••••••• (Active)" else "Paste API Key (sk-...)",
+                    text = if (selectedProvider == "makersuite") {
+                        if (aiSettings.hasExistingKey) "•••••••••••••••• (Google Key Active)" else "Paste API Key (AIzaSy...)"
+                    } else {
+                        if (aiSettings.hasExistingKey) "•••••••••••••••• (Active)" else "Paste API Key (sk-...)"
+                    },
                     color = ColorTextSecondary.copy(alpha = 0.5f)
                 )
             },
@@ -1204,6 +1494,35 @@ fun AiSettingsSheetContent(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp)
         )
+
+        // Helper Banner for Google AI Studio
+        if (selectedProvider == "makersuite") {
+            Spacer(modifier = Modifier.height(8.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFF141926),
+                border = BorderStroke(1.dp, Color(0xFF1E293B))
+            ) {
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VpnKey,
+                        contentDescription = null,
+                        tint = ColorAccentCyan,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Google AI Studio keys start with 'AIzaSy...'. Get your free key at aistudio.google.com",
+                        fontSize = 11.sp,
+                        color = ColorTextSecondary
+                    )
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(14.dp))
 
@@ -1334,15 +1653,6 @@ fun AiSettingsSheetContent(
             )
         }
     }
-}
-
-private fun getDefaultModelForProvider(provider: String): String = when (provider) {
-    "openrouter" -> "anthropic/claude-3.5-sonnet"
-    "claude" -> "claude-3-5-sonnet-20241022"
-    "makersuite" -> "gemini-1.5-pro-latest"
-    "deepseek" -> "deepseek-chat"
-    "groq" -> "llama-3.3-70b-versatile"
-    else -> "gpt-4o"
 }
 
 @Composable

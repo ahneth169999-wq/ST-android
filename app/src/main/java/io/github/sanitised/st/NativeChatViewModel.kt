@@ -73,6 +73,33 @@ class NativeChatViewModel : ViewModel() {
         }
     }
 
+    fun saveApiKeyDirect(provider: String, apiKey: String, onComplete: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val secretKeyName = when (provider) {
+                "openrouter" -> "api_key_openrouter"
+                "openai" -> "api_key_openai"
+                "claude" -> "api_key_claude"
+                "makersuite" -> "api_key_makersuite"
+                "deepseek" -> "api_key_deepseek"
+                "groq" -> "api_key_groq"
+                "custom" -> "api_key_custom"
+                else -> "api_key_$provider"
+            }
+            val success = NativeChatApi.writeSecret(currentBaseUrl, secretKeyName, apiKey.trim())
+            if (success) {
+                _aiSettings.value = _aiSettings.value.copy(hasExistingKey = true)
+            }
+            onComplete(success)
+        }
+    }
+
+    fun fetchAvailableModels(source: String, onResult: (List<String>) -> Unit) {
+        viewModelScope.launch {
+            val list = NativeChatApi.fetchAvailableModels(currentBaseUrl, source)
+            onResult(list)
+        }
+    }
+
     fun loadCharacters(initialAvatar: String? = null) {
         viewModelScope.launch {
             _isLoadingCharacters.value = true

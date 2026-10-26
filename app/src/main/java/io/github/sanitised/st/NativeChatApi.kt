@@ -448,14 +448,14 @@ object NativeChatApi {
         val settings = getSettings(baseUrl) ?: JSONObject()
         val secretsState = getSecretState(baseUrl)
 
-        val provider = settings.optString("main_api", "openrouter").ifBlank { "openrouter" }
+        val provider = settings.optString("main_api", "makersuite").ifBlank { "makersuite" }
         val modelKey = "model_$provider"
         val model = settings.optString(modelKey, "").ifBlank {
             settings.optString("model", "").ifBlank {
                 when (provider) {
+                    "makersuite" -> "gemini-2.0-flash"
                     "openrouter" -> "anthropic/claude-3.5-sonnet"
                     "claude" -> "claude-3-5-sonnet-20241022"
-                    "makersuite" -> "gemini-1.5-pro-latest"
                     "deepseek" -> "deepseek-chat"
                     "groq" -> "llama-3.3-70b-versatile"
                     else -> "gpt-4o"
@@ -477,6 +477,8 @@ object NativeChatApi {
         var hasKey = false
         val secretArr = secretsState?.optJSONArray(secretKeyName)
         if (secretArr != null && secretArr.length() > 0) {
+            hasKey = true
+        } else if (secretsState?.optBoolean(secretKeyName, false) == true) {
             hasKey = true
         }
 
@@ -536,6 +538,40 @@ object NativeChatApi {
     }
 
     /**
+     * Query SillyTavern's backend status endpoint to fetch available models
+     * for a given provider (e.g., 'makersuite' queries Google AI Studio directly).
+     */
+    suspend fun fetchAvailableModels(baseUrl: String, source: String): List<String> = withContext(Dispatchers.IO) {
+        try {
+            val req = JSONObject().apply {
+                put("chat_completion_source", source)
+            }
+            val responseText = postJson("$baseUrl/api/backends/chat-completions/status", req.toString(), timeoutMs = 20_000)
+            val resObj = JSONObject(responseText)
+            val models = mutableListOf<String>()
+
+            val dataArr = resObj.optJSONArray("data")
+            if (dataArr != null) {
+                for (i in 0 until dataArr.length()) {
+                    val item = dataArr.opt(i)
+                    if (item is JSONObject) {
+                        val id = item.optString("id", "").ifBlank {
+                            item.optString("name", "").removePrefix("models/")
+                        }
+                        if (id.isNotBlank()) models.add(id)
+                    } else if (item is String && item.isNotBlank()) {
+                        models.add(item.removePrefix("models/"))
+                    }
+                }
+            }
+            models
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
+        }
+    }
+
+    /**
      * Send generation request to SillyTavern's active completion backend.
      */
     suspend fun generateReply(
@@ -547,7 +583,7 @@ object NativeChatApi {
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val settings = getSettings(baseUrl)
-            val mainApi = settings?.optString("main_api", "openrouter") ?: "openrouter"
+            val mainApi = settings?.optString("main_api", "makersuite")?.ifBlank { "makersuite" } ?: "makersuite"
 
             // Construct System Prompt
             val systemPromptParts = mutableListOf<String>()
@@ -587,9 +623,9 @@ object NativeChatApi {
             val model = settings?.optString(modelKey, "").takeIf { !it.isNullOrBlank() }
                 ?: settings?.optString("model", "").takeIf { !it.isNullOrBlank() }
                 ?: when (mainApi) {
+                    "makersuite" -> "gemini-2.0-flash"
                     "openrouter" -> "anthropic/claude-3.5-sonnet"
                     "claude" -> "claude-3-5-sonnet-20241022"
-                    "makersuite" -> "gemini-1.5-pro-latest"
                     "deepseek" -> "deepseek-chat"
                     "groq" -> "llama-3.3-70b-versatile"
                     else -> "gpt-4o"
@@ -613,6 +649,15 @@ object NativeChatApi {
             val responseText = postJson("$baseUrl/api/backends/chat-completions/generate", requestBody.toString(), timeoutMs = 90_000)
             val resObj = JSONObject(responseText)
 
+            // Inspect for backend or provider error messages
+            if (resObj.has("error")) {
+                val errObj = resObj.optJSONObject("error")
+                val msg = errObj?.optString("message", "")?.ifBlank { errObj.optString("error", "") }
+                    ?: resObj.optString("error", "").takeIf { it.isNotBlank() && it != "true" }
+                    ?: "Error from AI provider. Please verify your Google AI Studio key and model."
+                return@withContext Result.failure(Exception(msg))
+            }
+
             val choices = resObj.optJSONArray("choices")
             if (choices != null && choices.length() > 0) {
                 val firstChoice = choices.getJSONObject(0)
@@ -628,7 +673,7 @@ object NativeChatApi {
                 return@withContext Result.success(directText)
             }
 
-            Result.failure(Exception("Received empty response from AI backend. Please verify your API key and model in SillyTavern settings."))
+            Result.failure(Exception("Received empty response from AI backend. Please verify your API key and model."))
         } catch (e: Exception) {
             e.printStackTrace()
             Result.failure(e)
