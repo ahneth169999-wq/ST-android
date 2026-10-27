@@ -272,10 +272,9 @@ fun StWebViewScreen(
 
                         // Accept cookies including local session cookies
                         try {
-                            android.webkit.CookieManager.getInstance().apply {
-                                setAcceptCookie(true)
-                                setAcceptThirdPartyCookies(this@apply, true)
-                            }
+                            val cookieMgr = android.webkit.CookieManager.getInstance()
+                            cookieMgr.setAcceptCookie(true)
+                            cookieMgr.setAcceptThirdPartyCookies(this, true)
                         } catch (_: Exception) {}
 
                         settings.apply {
