@@ -381,7 +381,6 @@ fun StNativeChatScreen(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
-            .navigationBarsPadding()
             .background(ColorOledBackground)
     ) {
         // --- Top Bar ---
@@ -672,6 +671,26 @@ fun StNativeChatScreen(
                                 )
                             }
                         }
+
+                        OutlinedButton(
+                            onClick = { showSettingsSheet = true },
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.height(32.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = null,
+                                tint = Color(0xFFFCA5A5),
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Switch Model",
+                                fontSize = 12.sp,
+                                color = Color(0xFFFCA5A5)
+                            )
+                        }
                     }
                 }
             }
@@ -813,6 +832,7 @@ fun StNativeChatScreen(
                             },
                             onContinue = { viewModel.continueLastMessage() },
                             onRegenerate = { viewModel.regenerateLastMessage() },
+                            onRetry = if (errorMessage != null) { { viewModel.retryLastMessage() } } else null,
                             onCopy = {
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 clipboard.setPrimaryClip(ClipData.newPlainText("SillyTavern", msg.text))
@@ -829,6 +849,7 @@ fun StNativeChatScreen(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .imePadding(),
             color = ColorSurfaceCard,
             tonalElevation = 6.dp
@@ -876,7 +897,7 @@ fun StNativeChatScreen(
 
                 // Quick Action Bar: Regenerate & Continue (when last message is from assistant and not generating)
                 AnimatedVisibility(
-                    visible = messages.isNotEmpty() && !messages.last().isUser && !isGenerating,
+                    visible = messages.isNotEmpty() && !messages.last().isUser && !isGenerating && inputPrompt.isEmpty(),
                     enter = fadeIn(),
                     exit = fadeOut()
                 ) {
@@ -937,6 +958,78 @@ fun StNativeChatScreen(
                                     color = ColorAccentViolet,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Retry Action Bar (when last message is from user and not generating)
+                AnimatedVisibility(
+                    visible = messages.isNotEmpty() && messages.last().isUser && !isGenerating && inputPrompt.isEmpty(),
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Retry Generation Button
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xFF7F1D1D),
+                            border = BorderStroke(1.dp, Color(0xFFEF4444)),
+                            modifier = Modifier.clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.retryLastMessage()
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Retry Generation",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Retry Generation",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        // Quick Switch Model Button
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xFF191B26),
+                            border = BorderStroke(1.dp, ColorCardBorder),
+                            modifier = Modifier.clickable { showSettingsSheet = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = "Switch Model",
+                                    tint = ColorAccentCyan,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Switch Model",
+                                    color = ColorAccentCyan,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
                                 )
                             }
                         }
@@ -2569,6 +2662,7 @@ fun MessageBubble(
     onSwipeRight: (() -> Unit)? = null,
     onContinue: (() -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
+    onRetry: (() -> Unit)? = null,
     onCopy: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
@@ -2768,6 +2862,35 @@ fun MessageBubble(
                                         )
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    if (isUser && isLastMessage && onRetry != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF7F1D1D).copy(alpha = 0.95f),
+                            border = BorderStroke(1.dp, Color(0xFFEF4444)),
+                            modifier = Modifier.clickable { onRetry() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Retry",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Failed • Tap to Retry",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                             }
                         }
                     }

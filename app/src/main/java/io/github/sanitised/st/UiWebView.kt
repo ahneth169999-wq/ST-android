@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -182,6 +183,32 @@ fun StWebViewScreen(
                     )
                 }
 
+                // Force Dismiss Splash / Bypass Preloader if stuck
+                IconButton(
+                    onClick = {
+                        webViewInstance?.evaluateJavascript(
+                            """
+                            (function() {
+                                var splash = document.querySelector('.splash-screen') || document.getElementById('preloader');
+                                if (splash && splash.parentNode) splash.parentNode.removeChild(splash);
+                                var popups = document.querySelectorAll('.popup-overlay, .popup');
+                                popups.forEach(function(p) { if (p.innerText && p.innerText.includes('Initializing')) p.remove(); });
+                                var preloader = document.getElementById('preloader');
+                                if (preloader) preloader.remove();
+                            })();
+                            """.trimIndent(),
+                            null
+                        )
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VisibilityOff,
+                        contentDescription = "Bypass Splash Screen if Stuck",
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                }
+
                 // Reload Page Button
                 IconButton(
                     onClick = { webViewInstance?.reload() },
@@ -243,12 +270,21 @@ fun StWebViewScreen(
                         isFocusable = true
                         isFocusableInTouchMode = true
 
+                        // Accept cookies including local session cookies
+                        try {
+                            android.webkit.CookieManager.getInstance().apply {
+                                setAcceptCookie(true)
+                                setAcceptThirdPartyCookies(this@apply, true)
+                            }
+                        } catch (_: Exception) {}
+
                         settings.apply {
                             javaScriptEnabled = true
                             domStorageEnabled = true
                             databaseEnabled = true
                             allowFileAccess = true
                             allowContentAccess = true
+                            javaScriptCanOpenWindowsAutomatically = true
                             mediaPlaybackRequiresUserGesture = false
                             setSupportZoom(false)
                             builtInZoomControls = false
@@ -262,10 +298,23 @@ fun StWebViewScreen(
                                 view: WebView?,
                                 request: WebResourceRequest?
                             ): Boolean {
-                                val targetUri = request?.url ?: return false
+                                val req = request ?: return false
+                                // Only intercept top-level main frame navigation!
+                                // Never intercept sub-resources, iframes, web workers, blobs, or API calls!
+                                if (!req.isForMainFrame) {
+                                    return false
+                                }
+
+                                val targetUri = req.url ?: return false
+                                val scheme = targetUri.scheme?.lowercase() ?: ""
+                                // Never intercept blob:, data:, about:, or javascript: schemes
+                                if (scheme != "http" && scheme != "https") {
+                                    return false
+                                }
+
                                 val host = targetUri.host.orEmpty()
                                 // Keep local/internal URLs inside this WebView
-                                return if (host == "127.0.0.1" || host == "localhost" || host.startsWith("192.168.") || host.startsWith("10.")) {
+                                return if (host == "127.0.0.1" || host == "localhost" || host.startsWith("192.168.") || host.startsWith("10.") || host.endsWith(".local")) {
                                     false
                                 } else {
                                     onOpenExternalBrowser(targetUri.toString())
@@ -281,6 +330,34 @@ fun StWebViewScreen(
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 isLoading = false
                                 pageTitle = view?.title?.takeIf { it.isNotBlank() } ?: "SillyTavern"
+
+                                // Safety Watchdog: SillyTavern's splash screen/preloader can get stuck if an extension or tokenizer worker hangs.
+                                // Automatically dismisses stuck splash overlay after 6s once the main page elements exist.
+                                view?.evaluateJavascript(
+                                    """
+                                    (function() {
+                                        setTimeout(function() {
+                                            try {
+                                                var splash = document.querySelector('.splash-screen') || document.getElementById('preloader');
+                                                var topBar = document.getElementById('top-bar');
+                                                if (splash && (topBar || document.getElementById('form_sheld') || (document.body && document.body.children.length > 5))) {
+                                                    console.warn('[ST-Android] Auto-dismissing stuck initialization splash screen');
+                                                    if (splash.parentNode) splash.parentNode.removeChild(splash);
+                                                    var popups = document.querySelectorAll('.popup-overlay, .popup');
+                                                    popups.forEach(function(p) {
+                                                        if (p.innerText && p.innerText.includes('Initializing')) {
+                                                            p.remove();
+                                                        }
+                                                    });
+                                                    var preloader = document.getElementById('preloader');
+                                                    if (preloader) preloader.remove();
+                                                }
+                                            } catch(e) {}
+                                        }, 6000);
+                                    })();
+                                    """.trimIndent(),
+                                    null
+                                )
                             }
 
                             override fun onReceivedError(
@@ -301,6 +378,14 @@ fun StWebViewScreen(
                                 if (newProgress >= 100) {
                                     isLoading = false
                                 }
+                            }
+
+                            override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
+                                val msg = consoleMessage?.message() ?: ""
+                                val line = consoleMessage?.lineNumber() ?: 0
+                                val src = consoleMessage?.sourceId() ?: ""
+                                android.util.Log.d("STWebView", "[$src:$line] $msg")
+                                return true
                             }
 
                             override fun onReceivedTitle(view: WebView?, title: String?) {

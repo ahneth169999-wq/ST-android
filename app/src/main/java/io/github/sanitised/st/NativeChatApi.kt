@@ -650,7 +650,15 @@ object NativeChatApi {
                 put("content", systemPrompt)
             })
 
-            val recentHistory = history.takeLast(20)
+            // Strip trailing user message from history if identical to userMessage,
+            // avoiding duplicate consecutive user turns in Gemini/LLM APIs
+            val historyWithoutTrailing = if (history.isNotEmpty() && history.last().isUser && history.last().text == userMessage) {
+                history.dropLast(1)
+            } else {
+                history
+            }
+
+            val recentHistory = historyWithoutTrailing.takeLast(20)
             for (m in recentHistory) {
                 if (m.isGenerating || m.text.isBlank()) continue
                 messagesArray.put(JSONObject().apply {
@@ -700,7 +708,7 @@ object NativeChatApi {
                 }
             }
 
-            val maxRetries = 3
+            val maxRetries = 5
             var retryCount = 0
             var responseText = ""
 
@@ -741,9 +749,11 @@ object NativeChatApi {
                             errorMsg.contains("quota", ignoreCase = true)
 
                     if (isHighDemandOrTimeout && retryCount < maxRetries) {
-                        val waitSec = retryCount * 2
-                        onStatusUpdate?.invoke("High demand. Retrying in ${waitSec}s ($retryCount/$maxRetries)...")
-                        delay(waitSec * 1000L)
+                        val waitSec = retryCount * 3
+                        for (sec in waitSec downTo 1) {
+                            onStatusUpdate?.invoke("High demand. Retrying in ${sec}s (attempt $retryCount/$maxRetries)...")
+                            delay(1000L)
+                        }
                         continue
                     }
 
