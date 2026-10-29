@@ -29,12 +29,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -703,21 +708,16 @@ fun StNativeChatScreen(
                 .weight(1f)
         ) {
             if (isLoadingMessages || isLoadingCharacters) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = ColorAccentViolet)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "Connecting to SillyTavern engine...",
-                            color = ColorTextSecondary,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
-            } else if (selectedCharacter == null) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .align(Alignment.TopCenter),
+                    color = activeTheme.accent
+                )
+            }
+
+            if (selectedCharacter == null && characters.isEmpty() && !isLoadingCharacters) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -846,11 +846,14 @@ fun StNativeChatScreen(
         }
 
         // --- Bottom Input Bar ---
+        val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val bottomPadding = maxOf(imeBottom, navBottom)
+
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding(),
+                .padding(bottom = bottomPadding),
             color = ColorSurfaceCard,
             tonalElevation = 6.dp
         ) {
@@ -1119,7 +1122,11 @@ fun StNativeChatScreen(
                             .size(44.dp)
                             .clip(CircleShape)
                             .background(
-                                if (inputPrompt.isNotBlank() && !isGenerating) {
+                                if (isGenerating) {
+                                    Brush.horizontalGradient(
+                                        listOf(Color(0xFFDC2626), Color(0xFFEF4444))
+                                    )
+                                } else if (inputPrompt.isNotBlank()) {
                                     Brush.horizontalGradient(
                                         listOf(activeTheme.gradientStart, activeTheme.gradientEnd)
                                     )
@@ -1129,19 +1136,25 @@ fun StNativeChatScreen(
                                     )
                                 }
                             )
-                            .clickable(enabled = inputPrompt.isNotBlank() && !isGenerating) {
-                                val text = inputPrompt
-                                inputPrompt = ""
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.sendMessage(text)
+                            .clickable(enabled = isGenerating || inputPrompt.isNotBlank()) {
+                                if (isGenerating) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.stopGeneration()
+                                } else {
+                                    val text = inputPrompt
+                                    inputPrompt = ""
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.sendMessage(text)
+                                }
                             },
                         contentAlignment = Alignment.Center
                     ) {
                         if (isGenerating) {
-                            CircularProgressIndicator(
-                                color = ColorAccentCyan,
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.dp
+                            Icon(
+                                imageVector = Icons.Default.Stop,
+                                contentDescription = "Stop Generation",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
                             )
                         } else {
                             Icon(

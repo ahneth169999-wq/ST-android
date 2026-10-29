@@ -2,17 +2,31 @@ package io.github.sanitised.st
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+val DEFAULT_COMPANION = StCharacter(
+    avatar = "default_companion",
+    name = "SillyTavern Assistant",
+    description = "Your built-in AI roleplay companion and creative assistant.",
+    personality = "Engaging, creative, intelligent, empathetic, and ready for any roleplay scenario.",
+    firstMessage = "Hello! I'm your SillyTavern AI companion. I'm ready to roleplay or chat with you. What would you like to explore today?",
+    scenario = "A cozy, limitless creative roleplay session.",
+    creatorNotes = "Default built-in companion."
+)
+
 class NativeChatViewModel : ViewModel() {
+    private var generateJob: Job? = null
 
     private val _characters = MutableStateFlow<List<StCharacter>>(emptyList())
     val characters: StateFlow<List<StCharacter>> = _characters.asStateFlow()
@@ -129,24 +143,56 @@ class NativeChatViewModel : ViewModel() {
             _isLoadingCharacters.value = true
             _errorMessage.value = null
             try {
-                var list = NativeChatApi.getCharacters(currentBaseUrl, localCharacterDirs)
-                if (list.isEmpty()) {
-                    // Retry once after 1.5s in case Node.js server was completing startup
-                    delay(1500)
-                    list = NativeChatApi.getCharacters(currentBaseUrl, localCharacterDirs)
+                // 1. Scan local disk FIRST for 0ms instantaneous character discovery
+                val localList = withContext(Dispatchers.IO) {
+                    NativeChatApi.scanLocalCharacters(localCharacterDirs)
+                }
+                if (localList.isNotEmpty()) {
+                    _characters.value = localList
+                    if (_selectedCharacter.value == null) {
+                        val target = if (!initialAvatar.isNullOrBlank()) {
+                            localList.firstOrNull { it.avatar == initialAvatar } ?: localList.first()
+                        } else {
+                            localList.first()
+                        }
+                        selectCharacter(target)
+                    }
                 }
 
-                _characters.value = list
-                if (list.isNotEmpty()) {
+                // 2. Fetch full character list from server in parallel
+                val serverList = withContext(Dispatchers.IO) {
+                    try {
+                        NativeChatApi.getCharacters(currentBaseUrl, localCharacterDirs)
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                }
+
+                val combined = if (serverList.isNotEmpty()) {
+                    val map = mutableMapOf<String, StCharacter>()
+                    for (c in localList) map[c.avatar] = c
+                    for (c in serverList) map[c.avatar] = c
+                    map.values.sortedByDescending { it.dateLastChat }
+                } else if (localList.isNotEmpty()) {
+                    localList
+                } else {
+                    listOf(DEFAULT_COMPANION)
+                }
+
+                _characters.value = combined
+                if (_selectedCharacter.value == null || _selectedCharacter.value?.avatar == DEFAULT_COMPANION.avatar) {
                     val target = if (!initialAvatar.isNullOrBlank()) {
-                        list.firstOrNull { it.avatar == initialAvatar } ?: list.first()
+                        combined.firstOrNull { it.avatar == initialAvatar } ?: combined.first()
                     } else {
-                        _selectedCharacter.value ?: list.first()
+                        combined.first()
                     }
                     selectCharacter(target)
                 }
             } catch (e: Exception) {
-                _errorMessage.value = "Failed to load characters: ${e.localizedMessage}"
+                if (_characters.value.isEmpty()) {
+                    _characters.value = listOf(DEFAULT_COMPANION)
+                    selectCharacter(DEFAULT_COMPANION)
+                }
             } finally {
                 _isLoadingCharacters.value = false
             }
@@ -283,8 +329,22 @@ class NativeChatViewModel : ViewModel() {
         return createNewChat(character = _selectedCharacter.value, onComplete = onComplete)
     }
 
+    fun stopGeneration() {
+        generateJob?.cancel()
+        generateJob = null
+        _isGenerating.value = false
+        _statusMessage.value = null
+        val list = _messages.value
+        if (list.isNotEmpty() && list.last().isGenerating) {
+            _messages.value = list.dropLast(1)
+        }
+    }
+
     fun sendMessage(userText: String, userName: String = _userName.value) {
-        val character = _selectedCharacter.value ?: return
+        val character = _selectedCharacter.value ?: _characters.value.firstOrNull() ?: DEFAULT_COMPANION
+        if (_selectedCharacter.value == null) {
+            _selectedCharacter.value = character
+        }
         val trimmed = userText.trim()
         if (trimmed.isBlank() || _isGenerating.value) return
 
@@ -307,7 +367,8 @@ class NativeChatViewModel : ViewModel() {
         _isGenerating.value = true
         _errorMessage.value = null
 
-        viewModelScope.launch {
+        generateJob?.cancel()
+        generateJob = viewModelScope.launch {
             saveCurrentChat(messagesToSave = updatedList)
 
             val result = NativeChatApi.generateReply(
@@ -372,7 +433,8 @@ class NativeChatViewModel : ViewModel() {
         _isGenerating.value = true
         _errorMessage.value = null
 
-        viewModelScope.launch {
+        generateJob?.cancel()
+        generateJob = viewModelScope.launch {
             val result = NativeChatApi.generateReply(
                 baseUrl = currentBaseUrl,
                 character = character,
@@ -428,7 +490,8 @@ class NativeChatViewModel : ViewModel() {
         _isGenerating.value = true
         _errorMessage.value = null
 
-        viewModelScope.launch {
+        generateJob?.cancel()
+        generateJob = viewModelScope.launch {
             val result = NativeChatApi.generateReply(
                 baseUrl = currentBaseUrl,
                 character = character,
@@ -495,7 +558,8 @@ class NativeChatViewModel : ViewModel() {
         _isGenerating.value = true
         _errorMessage.value = null
 
-        viewModelScope.launch {
+        generateJob?.cancel()
+        generateJob = viewModelScope.launch {
             val result = NativeChatApi.generateReply(
                 baseUrl = currentBaseUrl,
                 character = character,

@@ -588,7 +588,11 @@ class MainActivity : ComponentActivity() {
                         val localDirs = listOf(
                             java.io.File(appPaths.dataDir, "default-user/characters"),
                             java.io.File(appPaths.dataDir, "characters"),
-                            java.io.File(appPaths.stDir, "public/characters")
+                            java.io.File(appPaths.stDir, "data/default-user/characters"),
+                            java.io.File(appPaths.stDir, "data/characters"),
+                            java.io.File(appPaths.stDir, "public/characters"),
+                            java.io.File(appPaths.filesDir, "data/default-user/characters"),
+                            java.io.File(appPaths.filesDir, "characters")
                         )
                         StNativeChatScreen(
                             baseUrl = baseUrl,

@@ -14,6 +14,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -60,6 +61,55 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+
+private const val UNFREEZE_JS = """
+(function() {
+    try {
+        console.log('[ST-Android] Dismissing all blockers and modal dialogs...');
+        // 1. Close and remove all modal dialogs so they stop blocking pointer events
+        var dialogs = document.querySelectorAll('dialog');
+        dialogs.forEach(function(d) {
+            try { d.close(); } catch(e) {}
+            try { d.removeAttribute('open'); } catch(e) {}
+            d.style.display = 'none';
+            d.style.pointerEvents = 'none';
+            if (d.parentNode) d.parentNode.removeChild(d);
+        });
+
+        // 2. Remove splash screens, preloaders, loader popups, and overlays
+        var blockers = document.querySelectorAll('.splash-screen, #preloader, .popup, .popup-overlay, #loader, .action-loader-toast, .dialog-backdrop, [role="dialog"]');
+        blockers.forEach(function(el) {
+            el.style.display = 'none';
+            el.style.pointerEvents = 'none';
+            if (el.parentNode) el.parentNode.removeChild(el);
+        });
+
+        // 3. Remove inert attribute from any element
+        document.querySelectorAll('[inert]').forEach(function(el) {
+            try { el.removeAttribute('inert'); } catch(e) {}
+        });
+
+        // 4. Force body, html, and main containers to be interactive and visible
+        document.documentElement.style.pointerEvents = 'auto';
+        document.body.style.pointerEvents = 'auto';
+        document.body.classList.remove('no-blur');
+
+        var sheld = document.getElementById('sheld') || document.getElementById('form_sheld');
+        if (sheld) {
+            sheld.style.pointerEvents = 'auto';
+        }
+        var topBar = document.getElementById('top-bar');
+        if (topBar) {
+            topBar.style.pointerEvents = 'auto';
+        }
+
+        // 5. Trigger resize to wake up layout calculations
+        window.dispatchEvent(new Event('resize'));
+    } catch(err) {
+        console.error('[ST-Android] Unfreeze error:', err);
+    }
+})();
+"""
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -186,19 +236,8 @@ fun StWebViewScreen(
                 // Force Dismiss Splash / Bypass Preloader if stuck
                 IconButton(
                     onClick = {
-                        webViewInstance?.evaluateJavascript(
-                            """
-                            (function() {
-                                var splash = document.querySelector('.splash-screen') || document.getElementById('preloader');
-                                if (splash && splash.parentNode) splash.parentNode.removeChild(splash);
-                                var popups = document.querySelectorAll('.popup-overlay, .popup');
-                                popups.forEach(function(p) { if (p.innerText && p.innerText.includes('Initializing')) p.remove(); });
-                                var preloader = document.getElementById('preloader');
-                                if (preloader) preloader.remove();
-                            })();
-                            """.trimIndent(),
-                            null
-                        )
+                        webViewInstance?.evaluateJavascript(UNFREEZE_JS, null)
+                        Toast.makeText(context, "Unfreezing screen...", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.size(36.dp)
                 ) {
@@ -330,29 +369,24 @@ fun StWebViewScreen(
                                 isLoading = false
                                 pageTitle = view?.title?.takeIf { it.isNotBlank() } ?: "SillyTavern"
 
-                                // Safety Watchdog: SillyTavern's splash screen/preloader can get stuck if an extension or tokenizer worker hangs.
-                                // Automatically dismisses stuck splash overlay after 6s once the main page elements exist.
+                                // Safety Watchdog: SillyTavern's splash screen/dialog can get stuck if an extension or tokenizer worker hangs.
+                                // Periodically checks and unfreezes if modal overlays are blocking interactive page content.
                                 view?.evaluateJavascript(
                                     """
                                     (function() {
-                                        setTimeout(function() {
+                                        function checkAndDismiss() {
                                             try {
-                                                var splash = document.querySelector('.splash-screen') || document.getElementById('preloader');
+                                                var splash = document.querySelector('.splash-screen') || document.getElementById('preloader') || document.querySelector('dialog[open]');
                                                 var topBar = document.getElementById('top-bar');
-                                                if (splash && (topBar || document.getElementById('form_sheld') || (document.body && document.body.children.length > 5))) {
-                                                    console.warn('[ST-Android] Auto-dismissing stuck initialization splash screen');
-                                                    if (splash.parentNode) splash.parentNode.removeChild(splash);
-                                                    var popups = document.querySelectorAll('.popup-overlay, .popup');
-                                                    popups.forEach(function(p) {
-                                                        if (p.innerText && p.innerText.includes('Initializing')) {
-                                                            p.remove();
-                                                        }
-                                                    });
-                                                    var preloader = document.getElementById('preloader');
-                                                    if (preloader) preloader.remove();
+                                                var hasContent = topBar || document.getElementById('form_sheld') || (document.body && document.body.children.length > 5);
+                                                if (splash && hasContent) {
+                                                    console.warn('[ST-Android] Auto-dismissing stuck initialization dialog/splash');
+                                                    $UNFREEZE_JS
                                                 }
                                             } catch(e) {}
-                                        }, 6000);
+                                        }
+                                        setTimeout(checkAndDismiss, 3500);
+                                        setTimeout(checkAndDismiss, 6500);
                                     })();
                                     """.trimIndent(),
                                     null

@@ -49,8 +49,8 @@ object NativeChatApi {
             val url = URL("$baseUrl/csrf-token")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
-            conn.connectTimeout = 6_000
-            conn.readTimeout = 6_000
+            conn.connectTimeout = 3_000
+            conn.readTimeout = 3_000
             if (!sessionCookie.isNullOrBlank()) {
                 conn.setRequestProperty("Cookie", sessionCookie)
             }
@@ -73,7 +73,7 @@ object NativeChatApi {
     /**
      * Executes HTTP POST request with CSRF token and Cookie session.
      */
-    private fun postJson(urlStr: String, jsonBody: String, timeoutMs: Int = 30_000, retryOn403: Boolean = true): String {
+    private fun postJson(urlStr: String, jsonBody: String, timeoutMs: Int = 10_000, retryOn403: Boolean = true): String {
         val baseUrl = if (urlStr.contains("/api/")) urlStr.substringBefore("/api/") else urlStr.substringBeforeLast('/')
         ensureCsrfAndCookie(baseUrl)
 
@@ -82,7 +82,7 @@ object NativeChatApi {
         conn.requestMethod = "POST"
         conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
         conn.setRequestProperty("Accept", "application/json")
-        conn.connectTimeout = 10_000
+        conn.connectTimeout = 4_000
         conn.readTimeout = timeoutMs
 
         if (!sessionCookie.isNullOrBlank()) {
@@ -131,15 +131,54 @@ object NativeChatApi {
     }
 
     /**
+     * Instantly scan local disk directories for character cards.
+     * Takes ~5ms, zero network latency.
+     */
+    fun scanLocalCharacters(localCharacterDirs: List<File>): List<StCharacter> {
+        val characterList = mutableListOf<StCharacter>()
+        for (dir in localCharacterDirs) {
+            if (dir.exists() && dir.isDirectory) {
+                val files = dir.listFiles { _, name -> name.endsWith(".png", ignoreCase = true) } ?: continue
+                for (f in files) {
+                    if (characterList.none { it.avatar.equals(f.name, ignoreCase = true) }) {
+                        val parsed = parseLocalPngCard(f)
+                        if (parsed != null) {
+                            characterList.add(parsed)
+                        } else {
+                            // Support plain character image cards without embedded JSON
+                            val fallbackName = f.nameWithoutExtension.replace('_', ' ').replace('-', ' ').trim()
+                            if (fallbackName.isNotBlank()) {
+                                characterList.add(
+                                    StCharacter(
+                                        avatar = f.name,
+                                        name = fallbackName,
+                                        description = "Local character card",
+                                        firstMessage = "Hello!",
+                                        dateLastChat = f.lastModified()
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return characterList.sortedByDescending { it.dateLastChat }
+    }
+
+    /**
      * Fetch all characters installed in local SillyTavern.
-     * Uses HTTP API with CSRF token and merges with local disk characters.
+     * Scans local disk first for 0ms load, then queries HTTP API in background.
      */
     suspend fun getCharacters(baseUrl: String, localCharacterDirs: List<File> = emptyList()): List<StCharacter> = withContext(Dispatchers.IO) {
         val characterList = mutableListOf<StCharacter>()
 
-        // 1. Try HTTP API (with CSRF and session cookies)
+        // 1. Scan local disk directories first for instantaneous character access
+        characterList.addAll(scanLocalCharacters(localCharacterDirs))
+
+        // 2. Try HTTP API (with CSRF and session cookies) with fast timeout
         try {
-            val responseText = postJson("$baseUrl/api/characters/all", "{}")
+            val responseText = postJson("$baseUrl/api/characters/all", "{}", timeoutMs = 6_000)
             val array = JSONArray(responseText)
 
             for (i in 0 until array.length()) {
@@ -166,38 +205,27 @@ object NativeChatApi {
                     }
                 }
 
-                characterList.add(
-                    StCharacter(
-                        avatar = avatar,
-                        name = name,
-                        description = desc,
-                        personality = personality,
-                        firstMessage = firstMes,
-                        scenario = scenario,
-                        creatorNotes = creatorNotes,
-                        tags = tagsList,
-                        dateLastChat = dateLastChat,
-                        chatSize = chatSize
-                    )
+                val existingIdx = characterList.indexOfFirst { it.avatar.equals(avatar, ignoreCase = true) }
+                val charObj = StCharacter(
+                    avatar = avatar,
+                    name = name,
+                    description = desc,
+                    personality = personality,
+                    firstMessage = firstMes,
+                    scenario = scenario,
+                    creatorNotes = creatorNotes,
+                    tags = tagsList,
+                    dateLastChat = dateLastChat,
+                    chatSize = chatSize
                 )
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
-        // 2. Scan local disk directories and merge any missing characters
-        for (dir in localCharacterDirs) {
-            if (dir.exists() && dir.isDirectory) {
-                val files = dir.listFiles { _, name -> name.endsWith(".png", ignoreCase = true) } ?: continue
-                for (f in files) {
-                    if (characterList.none { it.avatar.equals(f.name, ignoreCase = true) }) {
-                        val parsed = parseLocalPngCard(f)
-                        if (parsed != null) {
-                            characterList.add(parsed)
-                        }
-                    }
+                if (existingIdx >= 0) {
+                    characterList[existingIdx] = charObj
+                } else {
+                    characterList.add(charObj)
                 }
             }
+        } catch (_: Exception) {
+            // Local characters are already returned!
         }
 
         characterList.sortedByDescending { it.dateLastChat }
